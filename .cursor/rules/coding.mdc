@@ -1,0 +1,6 @@
+---
+alwaysApply: true
+---
+- Follow php best practices
+- Maintain SOLID, DRY, KISS pattern
+- Use DTO instead of array
