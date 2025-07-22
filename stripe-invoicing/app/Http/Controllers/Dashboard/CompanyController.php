@@ -240,7 +240,7 @@ class CompanyController extends Controller
      */
     public function paymentMethods()
     {
-        $company = Auth::user()->company;
+        $company = Auth::user();
         $paymentMethods = $company->paymentMethods()->get();
 
         return view('company.payment-methods.index', compact('paymentMethods'));
@@ -258,7 +258,7 @@ class CompanyController extends Controller
             'is_default' => 'sometimes|boolean',
         ]);
 
-        $company = Auth::user()->company;
+        $company = Auth::user();
         $result = $this->stripeService->attachPaymentMethod($company, $request->payment_method_id, $request->boolean('is_default', false));
 
         if ($result['success']) {
@@ -280,8 +280,7 @@ class CompanyController extends Controller
         $company = Auth::user()->company;
         
         // Ensure payment method belongs to this company
-        if ($paymentMethod->payable_type !== get_class($company) || 
-            $paymentMethod->payable_id !== $company->id) {
+        if ($paymentMethod->payable_id !== Auth::user()->id) {
             abort(403, 'Unauthorized.');
         }
 
@@ -295,8 +294,7 @@ class CompanyController extends Controller
         $company = Auth::user()->company;
         
         // Ensure payment method belongs to this company
-        if ($paymentMethod->payable_type !== get_class($company) || 
-            $paymentMethod->payable_id !== $company->id) {
+        if ($paymentMethod->payable_id !== Auth::user()->id) {
             abort(403, 'Unauthorized.');
         }
 
@@ -311,7 +309,7 @@ class CompanyController extends Controller
     public function initiateVerification(Request $request, PaymentMethod $paymentMethod)
     {
         // Ensure this payment method belongs to the current company
-        if ($paymentMethod->payable_id !== Auth::user()->company->id || $paymentMethod->payable_type !== Company::class) {
+        if ($paymentMethod->payable_id !== Auth::user()->id) {
             return response()->json([
                 'success' => false,
                 'error' => 'Unauthorized access to payment method.',
@@ -340,7 +338,7 @@ class CompanyController extends Controller
     public function showVerifyForm(PaymentMethod $paymentMethod)
     {
         // Ensure this payment method belongs to the current company
-        if ($paymentMethod->payable_id !== Auth::user()->company->id || $paymentMethod->payable_type !== Company::class) {
+        if ($paymentMethod->payable_id !== Auth::user()->id) {
             abort(403, 'Unauthorized access to payment method.');
         }
 
@@ -359,7 +357,7 @@ class CompanyController extends Controller
     public function verifyMicroDeposits(Request $request, PaymentMethod $paymentMethod)
     {
         // Ensure this payment method belongs to the current company
-        if ($paymentMethod->payable_id !== Auth::user()->company->id || $paymentMethod->payable_type !== Company::class) {
+        if ($paymentMethod->payable_id !== Auth::user()->id) {
             return response()->json([
                 'success' => false,
                 'error' => 'Unauthorized access to payment method.',
@@ -466,7 +464,7 @@ class CompanyController extends Controller
         }
 
         // Get available payment methods for the company
-        $paymentMethods = $company->paymentMethods()
+        $paymentMethods = Auth::user()->paymentMethods()
             ->where('is_active', true)
             ->get();
 
@@ -497,8 +495,7 @@ class CompanyController extends Controller
         $paymentMethod = PaymentMethod::findOrFail($request->payment_method_id);
 
         // Ensure the payment method belongs to the company
-        if ($paymentMethod->payable_type !== get_class($company) || 
-            $paymentMethod->payable_id !== $company->id) {
+        if ($paymentMethod->payable_id !== Auth::user()->id) {
             return back()->with('error', 'Invalid payment method for this invoice.');
         }
 

@@ -7,6 +7,7 @@ use App\Models\Agent;
 use App\Models\Invoice;
 use App\Models\Transaction;
 use App\Models\PaymentMethod;
+use App\Models\User;
 use Stripe\Stripe;
 use Stripe\Account;
 use Stripe\AccountLink;
@@ -150,28 +151,22 @@ class StripeService
     public function createPaymentIntent(Invoice $invoice, PaymentMethod $paymentMethod, float $adminCommission = 2.00): array
     {
         try {
-            // Check if we're in demo mode (payment method starts with pm_demo_)
-            $isDemoMode = str_starts_with($paymentMethod->stripe_payment_method_id, 'pm_demo_');
-            
-            if ($isDemoMode) {
-                return $this->createDemoPayment($invoice, $paymentMethod, $adminCommission);
-            }
-
             // Calculate amounts
             $totalAmount = $invoice->total_amount * 100; // Convert to cents
             $adminCommissionCents = $adminCommission * 100;
-            $agentAmount = $totalAmount - $adminCommissionCents;
 
             $paymentIntent = PaymentIntent::create([
                 'amount' => $totalAmount,
                 'currency' => 'usd',
                 'customer' => $this->getOrCreateCustomer($invoice->company),
                 'payment_method' => $paymentMethod->stripe_payment_method_id,
-                'confirmation_method' => 'manual',
                 'confirm' => true,
+                'automatic_payment_methods' => [
+                    'enabled' => true,
+                    'allow_redirects' => 'never',
+                ],
                 'transfer_data' => [
                     'destination' => $invoice->agent->stripe_connect_account_id,
-                    'amount' => $agentAmount,
                 ],
                 'application_fee_amount' => $adminCommissionCents,
                 'metadata' => [
@@ -695,17 +690,24 @@ class StripeService
      */
     private function getOrCreateCustomer($entity): string
     {
+        if (!($entity instanceof User)) {
+            $entity = $entity->loadMissing('user')->user;
+        }
         // Check if entity has a stripe_customer_id field or create one
         if (!$entity->stripe_id ?? null) {
+            // For User entities
+            $email = $entity->email;
+            $name = $entity->name;
+
             $customer = Customer::create([
-                'email' => $entity->email,
-                'name' => $entity->name,
+                'email' => $email,
+                'name' => $name,
                 'metadata' => [
-                    'user_id' => $entity->id,
+                    'entity_type' => get_class($entity),
+                    'entity_id' => $entity->id,
                 ],
             ]);
-
-            // You might want to add stripe_id to your models
+            // Update entity with Stripe customer ID
             $entity->update(['stripe_id' => $customer->id]);
             
             return $customer->id;
