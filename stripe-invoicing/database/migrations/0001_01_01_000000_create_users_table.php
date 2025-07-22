@@ -17,6 +17,10 @@ return new class extends Migration
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
+            $table->enum('role', ['super_admin', 'company', 'agent'])->default('agent');
+            $table->string('stripe_connect_account_id')->nullable();
+            $table->boolean('stripe_onboarding_complete')->default(false);
+            $table->json('stripe_capabilities')->nullable();
             $table->rememberToken();
             $table->timestamps();
         });
