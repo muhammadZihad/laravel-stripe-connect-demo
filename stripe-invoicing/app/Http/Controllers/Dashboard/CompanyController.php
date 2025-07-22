@@ -77,8 +77,6 @@ class CompanyController extends Controller
 
     public function showAgent(Agent $agent)
     {
-        $this->authorize('view', $agent);
-        
         $agent->load(['user', 'invoices', 'transactions', 'paymentMethods']);
         
         $stats = [
@@ -93,15 +91,11 @@ class CompanyController extends Controller
 
     public function editAgent(Agent $agent)
     {
-        $this->authorize('update', $agent);
-        
         return view('company.agents.edit', compact('agent'));
     }
 
     public function updateAgent(Request $request, Agent $agent)
     {
-        $this->authorize('update', $agent);
-        
         $request->validate([
             'commission_rate' => 'nullable|numeric|min:0|max:100',
             'department' => 'nullable|string|max:255',
@@ -130,8 +124,6 @@ class CompanyController extends Controller
 
     public function showInvoice(Invoice $invoice)
     {
-        $this->authorize('view', $invoice);
-        
         $invoice->load(['agent.user', 'transactions']);
         
         return view('company.invoices.show', compact('invoice'));
@@ -184,8 +176,6 @@ class CompanyController extends Controller
 
     public function editInvoice(Invoice $invoice)
     {
-        $this->authorize('update', $invoice);
-        
         $company = Auth::user()->company;
         $agents = $company->agents()->with('user')->where('is_active', true)->get();
         
@@ -194,8 +184,6 @@ class CompanyController extends Controller
 
     public function updateInvoice(Request $request, Invoice $invoice)
     {
-        $this->authorize('update', $invoice);
-        
         // Only allow updates if invoice is not paid
         if ($invoice->isPaid()) {
             return back()->with('error', 'Cannot update a paid invoice.');
@@ -242,8 +230,6 @@ class CompanyController extends Controller
 
     public function showTransaction(Transaction $transaction)
     {
-        $this->authorize('view', $transaction);
-        
         $transaction->load(['invoice', 'agent.user']);
         
         return view('company.transactions.show', compact('transaction'));
