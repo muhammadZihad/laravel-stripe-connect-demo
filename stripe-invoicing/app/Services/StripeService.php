@@ -521,10 +521,15 @@ class StripeService
             $customer = $this->getOrCreateCustomer($entity);
 
             // Create a SetupIntent for micro-deposit verification
+            // Note: US bank accounts must be verified before they can be attached to customers
             $setupIntent = SetupIntent::create([
-                'customer' => $customer,
                 'payment_method' => $paymentMethod->stripe_payment_method_id,
                 'payment_method_types' => ['us_bank_account'],
+                'mandate_data' => [
+                    'customer_acceptance' => [
+                        'type' => 'offline',
+                    ],
+                ],
                 'confirm' => true,
                 'usage' => 'off_session',
             ]);
@@ -600,6 +605,15 @@ class StripeService
 
             // Check verification status
             if ($verificationResult->status === 'succeeded') {
+                // Now that verification succeeded, attach to customer
+                $entity = $paymentMethod->payable;
+                $customer = $this->getOrCreateCustomer($entity);
+                $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethod->stripe_payment_method_id);
+                
+                if (!$stripePaymentMethod->customer) {
+                    $stripePaymentMethod->attach(['customer' => $customer]);
+                }
+
                 // Update payment method as verified and active
                 $paymentMethod->update([
                     'verification_status' => 'verified',
@@ -615,7 +629,6 @@ class StripeService
                 ]);
 
                 // Set as default if it's the first active payment method
-                $entity = $paymentMethod->payable;
                 if (!$entity->paymentMethods()->where('is_default', true)->where('is_active', true)->exists()) {
                     $paymentMethod->update(['is_default' => true]);
                 }
