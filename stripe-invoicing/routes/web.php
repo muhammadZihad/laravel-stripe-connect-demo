@@ -124,6 +124,10 @@ Route::middleware(['auth', 'company'])->prefix('company')->name('company.')->gro
     Route::get('/invoices/{invoice}/edit', [CompanyController::class, 'editInvoice'])->name('invoices.edit');
     Route::put('/invoices/{invoice}', [CompanyController::class, 'updateInvoice'])->name('invoices.update');
     
+    // Invoice Payment
+    Route::get('/invoices/{invoice}/pay', [CompanyController::class, 'showPayInvoice'])->name('invoices.pay');
+    Route::post('/invoices/{invoice}/pay', [CompanyController::class, 'payInvoice'])->name('invoices.pay.process');
+    
     // Transactions
     Route::get('/transactions', [CompanyController::class, 'transactions'])->name('transactions');
     Route::get('/transactions/{transaction}', [CompanyController::class, 'showTransaction'])->name('transactions.show');

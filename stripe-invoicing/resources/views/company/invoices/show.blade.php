@@ -14,6 +14,9 @@
                 </div>
                 <div class="flex gap-3">
                     @if($invoice->status !== 'paid')
+                        <a href="{{ route('company.invoices.pay', $invoice) }}" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium">
+                            💳 Pay Invoice
+                        </a>
                         <a href="{{ route('company.invoices.edit', $invoice) }}" class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md text-sm font-medium">
                             Edit Invoice
                         </a>

@@ -446,4 +446,69 @@ class CompanyController extends Controller
 
         return view('company.reports', compact('monthlyStats', 'agentPerformance'));
     }
+
+    /**
+     * Show payment form for invoice
+     */
+    public function showPayInvoice(Invoice $invoice)
+    {
+        $company = Auth::user()->company;
+        
+        // Ensure invoice belongs to this company
+        if ($invoice->company_id !== $company->id) {
+            abort(403, 'Unauthorized.');
+        }
+
+        // Check if invoice is already paid
+        if ($invoice->status === 'paid') {
+            return redirect()->route('company.invoices.show', $invoice)
+                ->with('error', 'This invoice has already been paid.');
+        }
+
+        // Get available payment methods for the company
+        $paymentMethods = $company->paymentMethods()
+            ->where('is_active', true)
+            ->get();
+
+        return view('company.invoices.pay', compact('invoice', 'paymentMethods'));
+    }
+
+    /**
+     * Process payment for invoice
+     */
+    public function payInvoice(Request $request, Invoice $invoice)
+    {
+        $company = Auth::user()->company;
+        
+        // Ensure invoice belongs to this company
+        if ($invoice->company_id !== $company->id) {
+            abort(403, 'Unauthorized.');
+        }
+
+        // Check if invoice is already paid
+        if ($invoice->status === 'paid') {
+            return back()->with('error', 'This invoice has already been paid.');
+        }
+
+        $request->validate([
+            'payment_method_id' => 'required|exists:payment_methods,id',
+        ]);
+
+        $paymentMethod = PaymentMethod::findOrFail($request->payment_method_id);
+
+        // Ensure the payment method belongs to the company
+        if ($paymentMethod->payable_type !== get_class($company) || 
+            $paymentMethod->payable_id !== $company->id) {
+            return back()->with('error', 'Invalid payment method for this invoice.');
+        }
+
+        $result = $this->stripeService->createPaymentIntent($invoice, $paymentMethod);
+
+        if ($result['success']) {
+            return redirect()->route('company.invoices.show', $invoice)
+                ->with('success', 'Payment processed successfully!');
+        }
+
+        return back()->with('error', 'Payment failed: ' . $result['error']);
+    }
 }
