@@ -46,16 +46,9 @@ class StripeService
                     'card_payments' => ['requested' => true],
                     'transfers' => ['requested' => true],
                     'us_bank_account_ach_payments' => ['requested' => true],
-                ],
-                'configuration' => [
-                    'merchant' => [
-                        'capabilities' => [
-                            'card_payments' => ['requested' => true],
-                            'ach_debit_payments' => ['requested' => true],
-                            'us_bank_transfer_payments' => ['requested' => true],
-                        ]
-                    ],
-                ],                
+                    'us_bank_transfer_payments' => ['requested' => true],
+
+                ],          
                 'business_type' => $businessType,
                 'company' => $company ? [
                     'name' => $company->company_name,

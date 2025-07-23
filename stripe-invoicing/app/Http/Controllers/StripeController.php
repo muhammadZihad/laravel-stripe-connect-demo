@@ -148,6 +148,8 @@ class StripeController extends Controller
         $sig_header = $request->header('Stripe-Signature');
         $endpoint_secret = config('cashier.webhook.secret');
 
+        Log::info('Stripe webhook received', ['payload' => $payload, 'sig_header' => $sig_header, 'endpoint_secret' => $endpoint_secret]);
+
         try {
             // Verify webhook signature
             \Stripe\Webhook::constructEvent(

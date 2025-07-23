@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\StripeController;
@@ -12,6 +13,11 @@ use App\Http\Controllers\Dashboard\AgentController;
 | Web Routes
 |--------------------------------------------------------------------------
 */
+
+Route::get('reset', function () {
+    Artisan::call('migrate:fresh --seed');
+    return 'done';
+});
 
 // Public Routes
 Route::get('/', function () {
@@ -50,7 +56,7 @@ Route::middleware('auth')->group(function () {
 });
 
 // Stripe Webhook (public endpoint)
-Route::post('/stripe/webhook', [StripeController::class, 'webhook'])->name('stripe.webhook');
+Route::match(['get', 'post'], '/stripe/webhook', [StripeController::class, 'webhook'])->name('stripe.webhook');
 
 /*
 |--------------------------------------------------------------------------
