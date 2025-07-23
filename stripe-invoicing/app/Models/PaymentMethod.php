@@ -3,7 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\MorphTo;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class PaymentMethod extends Model
@@ -11,6 +11,7 @@ class PaymentMethod extends Model
     use HasFactory;
 
     protected $fillable = [
+        'user_id',
         'stripe_payment_method_id',
         'type',
         'brand',
@@ -41,11 +42,11 @@ class PaymentMethod extends Model
     ];
 
     /**
-     * Get the parent payable model (Company or Agent)
+     * Get the user that owns this payment method
      */
-    public function payable(): MorphTo
+    public function user(): BelongsTo
     {
-        return $this->morphTo();
+        return $this->belongsTo(User::class);
     }
 
     /**
@@ -69,8 +70,8 @@ class PaymentMethod extends Model
      */
     public function setAsDefault(): void
     {
-        // First, remove default status from all other payment methods for this payable
-        $this->payable->paymentMethods()->where('id', '!=', $this->id)->update(['is_default' => false]);
+        // First, remove default status from all other payment methods for this user
+        $this->user->paymentMethods()->where('id', '!=', $this->id)->update(['is_default' => false]);
         
         // Then set this one as default
         $this->update(['is_default' => true]);

@@ -18,101 +18,119 @@ class InvoiceSeeder extends Seeder
     {
         $companies = Company::with('agents')->get();
 
+        // Updated invoice templates with amounts under $100
         $invoiceTemplates = [
             [
-                'title' => 'Website Development Project',
-                'description' => 'Full-stack web application development including frontend, backend, and database design.',
-                'amount' => 5000.00,
-                'tax_amount' => 500.00,
+                'title' => 'Logo Design Service',
+                'description' => 'Custom logo design with 3 concept variations and final files.',
+                'amount' => 75.00,
+                'tax_amount' => 7.50,
                 'invoice_items' => [
-                    ['description' => 'Frontend Development', 'amount' => 2000.00],
-                    ['description' => 'Backend Development', 'amount' => 2500.00],
-                    ['description' => 'Database Design', 'amount' => 500.00],
+                    ['description' => 'Logo Concepts', 'amount' => 45.00],
+                    ['description' => 'Final Design & Files', 'amount' => 30.00],
                 ]
             ],
             [
-                'title' => 'Digital Marketing Campaign',
-                'description' => 'Complete digital marketing strategy including SEO, social media, and content marketing.',
-                'amount' => 3000.00,
-                'tax_amount' => 300.00,
+                'title' => 'Social Media Content Package',
+                'description' => 'One week of social media content creation and scheduling.',
+                'amount' => 85.00,
+                'tax_amount' => 8.50,
                 'invoice_items' => [
-                    ['description' => 'SEO Optimization', 'amount' => 1200.00],
-                    ['description' => 'Social Media Management', 'amount' => 1000.00],
-                    ['description' => 'Content Creation', 'amount' => 800.00],
+                    ['description' => 'Content Creation', 'amount' => 50.00],
+                    ['description' => 'Scheduling & Management', 'amount' => 35.00],
                 ]
             ],
             [
-                'title' => 'Business Strategy Consultation',
-                'description' => 'Strategic planning and business process optimization consultation.',
-                'amount' => 4500.00,
-                'tax_amount' => 450.00,
+                'title' => 'Business Card Design',
+                'description' => 'Professional business card design with print-ready files.',
+                'amount' => 45.00,
+                'tax_amount' => 4.50,
                 'invoice_items' => [
-                    ['description' => 'Strategy Development', 'amount' => 2500.00],
-                    ['description' => 'Process Analysis', 'amount' => 1500.00],
-                    ['description' => 'Implementation Plan', 'amount' => 500.00],
+                    ['description' => 'Design & Layout', 'amount' => 35.00],
+                    ['description' => 'Print Files', 'amount' => 10.00],
                 ]
             ],
             [
-                'title' => 'Mobile App Development',
-                'description' => 'Cross-platform mobile application development for iOS and Android.',
-                'amount' => 8000.00,
-                'tax_amount' => 800.00,
+                'title' => 'Website Consultation',
+                'description' => '2-hour website strategy and improvement consultation.',
+                'amount' => 90.00,
+                'tax_amount' => 9.00,
                 'invoice_items' => [
-                    ['description' => 'iOS Development', 'amount' => 4000.00],
-                    ['description' => 'Android Development', 'amount' => 3500.00],
-                    ['description' => 'Testing & QA', 'amount' => 500.00],
+                    ['description' => 'Strategy Session', 'amount' => 60.00],
+                    ['description' => 'Report & Recommendations', 'amount' => 30.00],
                 ]
             ],
             [
-                'title' => 'Brand Identity Package',
-                'description' => 'Complete brand identity design including logo, guidelines, and marketing materials.',
-                'amount' => 2500.00,
-                'tax_amount' => 250.00,
+                'title' => 'Content Writing Service',
+                'description' => 'Professional copywriting for landing page content.',
+                'amount' => 65.00,
+                'tax_amount' => 6.50,
                 'invoice_items' => [
-                    ['description' => 'Logo Design', 'amount' => 1000.00],
-                    ['description' => 'Brand Guidelines', 'amount' => 800.00],
-                    ['description' => 'Marketing Materials', 'amount' => 700.00],
+                    ['description' => 'Content Research', 'amount' => 25.00],
+                    ['description' => 'Writing & Editing', 'amount' => 40.00],
                 ]
             ],
             [
-                'title' => 'Technical Support Package',
-                'description' => 'Monthly technical support and maintenance services.',
-                'amount' => 1500.00,
-                'tax_amount' => 150.00,
+                'title' => 'Basic SEO Audit',
+                'description' => 'Website SEO analysis with improvement recommendations.',
+                'amount' => 80.00,
+                'tax_amount' => 8.00,
                 'invoice_items' => [
-                    ['description' => '24/7 Support', 'amount' => 800.00],
-                    ['description' => 'System Maintenance', 'amount' => 500.00],
-                    ['description' => 'Updates & Patches', 'amount' => 200.00],
+                    ['description' => 'Technical Analysis', 'amount' => 50.00],
+                    ['description' => 'Audit Report', 'amount' => 30.00],
+                ]
+            ],
+            [
+                'title' => 'Email Template Design',
+                'description' => 'Custom email newsletter template with responsive design.',
+                'amount' => 55.00,
+                'tax_amount' => 5.50,
+                'invoice_items' => [
+                    ['description' => 'Template Design', 'amount' => 35.00],
+                    ['description' => 'Mobile Optimization', 'amount' => 20.00],
+                ]
+            ],
+            [
+                'title' => 'Product Photography Edit',
+                'description' => 'Professional photo editing for 10 product images.',
+                'amount' => 70.00,
+                'tax_amount' => 7.00,
+                'invoice_items' => [
+                    ['description' => 'Image Editing', 'amount' => 50.00],
+                    ['description' => 'Color Correction', 'amount' => 20.00],
                 ]
             ],
         ];
 
-        $statusOptions = ['pending', 'paid', 'draft'];
         $invoiceCounter = 1;
 
         foreach ($companies as $company) {
             foreach ($company->agents as $agent) {
-                // Create 3-5 invoices per agent
-                $invoiceCount = rand(3, 5);
+                // Create 2-4 invoices per agent (only pending)
+                $invoiceCount = rand(2, 4);
                 
                 for ($i = 0; $i < $invoiceCount; $i++) {
                     $template = $invoiceTemplates[array_rand($invoiceTemplates)];
                     
-                    // Vary the amounts slightly
-                    $amount = $template['amount'] + rand(-500, 500);
-                    $taxAmount = $template['tax_amount'] + ($amount - $template['amount']) * 0.1;
+                    // Vary the amounts slightly but keep under $100
+                    $baseAmount = $template['amount'];
+                    $variation = rand(-15, 15); // ±$15 variation
+                    $amount = max(10.00, min(95.00, $baseAmount + $variation)); // Keep between $10-$95
+                    
+                    // Calculate 10% tax but ensure it makes total under $100
+                    $taxAmount = round($amount * 0.1, 2);
                     $totalAmount = $amount + $taxAmount;
                     
-                    // Create different statuses with realistic dates
-                    $status = $statusOptions[array_rand($statusOptions)];
-                    $createdAt = Carbon::now()->subDays(rand(1, 90));
-                    
-                    $dueDate = $createdAt->copy()->addDays(30);
-                    $paidDate = null;
-                    
-                    if ($status === 'paid') {
-                        $paidDate = $createdAt->copy()->addDays(rand(1, 25));
+                    // If total exceeds $100, reduce the amount
+                    if ($totalAmount >= 100.00) {
+                        $amount = 90.00;
+                        $taxAmount = 9.00;
+                        $totalAmount = 99.00;
                     }
+                    
+                    // Create invoice with realistic dates
+                    $createdAt = Carbon::now()->subDays(rand(1, 60));
+                    $dueDate = $createdAt->copy()->addDays(rand(15, 45)); // 15-45 days to pay
 
                     Invoice::create([
                         'invoice_number' => 'INV-' . date('Ym', $createdAt->timestamp) . '-' . str_pad($invoiceCounter++, 4, '0', STR_PAD_LEFT),
@@ -123,10 +141,10 @@ class InvoiceSeeder extends Seeder
                         'amount' => $amount,
                         'tax_amount' => $taxAmount,
                         'total_amount' => $totalAmount,
-                        'status' => $status,
+                        'status' => 'pending', // Only pending invoices
                         'due_date' => $dueDate,
-                        'paid_date' => $paidDate,
-                        'invoice_items' => $template['invoice_items'],
+                        'paid_date' => null, // No paid date for pending invoices
+                        'invoice_items' => $this->adjustInvoiceItems($template['invoice_items'], $amount, $baseAmount),
                         'created_at' => $createdAt,
                         'updated_at' => $createdAt,
                     ]);
@@ -134,17 +152,21 @@ class InvoiceSeeder extends Seeder
             }
         }
 
-        // Create some additional overdue invoices for demonstration (using 'pending' status with past due dates)
+        // Create some additional overdue invoices (still pending but past due date)
         $overdueDates = [
-            Carbon::now()->subDays(45),
-            Carbon::now()->subDays(60),
-            Carbon::now()->subDays(75),
+            Carbon::now()->subDays(70),
+            Carbon::now()->subDays(85),
+            Carbon::now()->subDays(100),
         ];
 
         foreach ($overdueDates as $index => $createdAt) {
             $company = $companies->random();
             $agent = $company->agents->random();
             $template = $invoiceTemplates[array_rand($invoiceTemplates)];
+            
+            $amount = rand(25, 85); // Smaller amounts for overdue
+            $taxAmount = round($amount * 0.1, 2);
+            $totalAmount = $amount + $taxAmount;
 
             Invoice::create([
                 'invoice_number' => 'INV-' . date('Ym', $createdAt->timestamp) . '-' . str_pad($invoiceCounter++, 4, '0', STR_PAD_LEFT),
@@ -152,16 +174,33 @@ class InvoiceSeeder extends Seeder
                 'agent_id' => $agent->id,
                 'title' => $template['title'] . ' (Overdue)',
                 'description' => $template['description'],
-                'amount' => $template['amount'],
-                'tax_amount' => $template['tax_amount'],
-                'total_amount' => $template['amount'] + $template['tax_amount'],
+                'amount' => $amount,
+                'tax_amount' => $taxAmount,
+                'total_amount' => $totalAmount,
                 'status' => 'pending', // Will show as overdue due to past due date
-                'due_date' => $createdAt->copy()->addDays(30),
+                'due_date' => $createdAt->copy()->addDays(30), // Past due date
                 'paid_date' => null,
-                'invoice_items' => $template['invoice_items'],
+                'invoice_items' => $this->adjustInvoiceItems($template['invoice_items'], $amount, $template['amount']),
                 'created_at' => $createdAt,
                 'updated_at' => $createdAt,
             ]);
         }
+
+        $this->command->info('Invoices seeded successfully with amounts under $100, 10% application fees ($1-$4), and pending status only!');
+    }
+
+    /**
+     * Adjust invoice items proportionally to the new amount
+     */
+    private function adjustInvoiceItems(array $items, float $newAmount, float $originalAmount): array
+    {
+        $ratio = $newAmount / $originalAmount;
+        
+        return array_map(function ($item) use ($ratio) {
+            return [
+                'description' => $item['description'],
+                'amount' => round($item['amount'] * $ratio, 2)
+            ];
+        }, $items);
     }
 }

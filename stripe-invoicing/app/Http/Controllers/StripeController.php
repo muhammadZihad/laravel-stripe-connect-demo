@@ -8,6 +8,7 @@ use App\Models\Company;
 use App\Models\Agent;
 use App\Models\Invoice;
 use App\Models\PaymentMethod;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -27,21 +28,12 @@ class StripeController extends Controller
     public function startOnboarding(Request $request)
     {
         $user = Auth::user();
-        $entity = null;
 
-        if ($user->isCompany()) {
-            $entity = $user->company;
-        } elseif ($user->isAgent()) {
-            $entity = $user->agent;
-        } else {
+        if (!$user->isCompany() && !$user->isAgent()) {
             return response()->json(['error' => 'Invalid user type for onboarding'], 400);
         }
 
-        if (!$entity) {
-            return response()->json(['error' => 'Profile not found'], 404);
-        }
-
-        $result = $this->stripeService->createOnboardingLink($entity);
+        $result = $this->stripeService->createOnboardingLink($user);
 
         if ($result['success']) {
             return redirect($result['onboarding_url']);
@@ -56,15 +48,12 @@ class StripeController extends Controller
     public function connectReturn(Request $request)
     {
         $user = Auth::user();
-        $entity = $user->isCompany() ? $user->company : $user->agent;
 
-        if ($entity) {
-            $result = $this->stripeService->checkOnboardingStatus($entity);
-            
-            if ($result['success'] && $result['onboarding_complete']) {
-                return redirect()->route($user->role . '.dashboard')
-                    ->with('success', 'Stripe Connect onboarding completed successfully!');
-            }
+        $result = $this->stripeService->checkOnboardingStatus($user);
+        
+        if ($result['success'] && $result['onboarding_complete']) {
+            return redirect()->route($user->role . '.dashboard')
+                ->with('success', 'Stripe Connect onboarding completed successfully!');
         }
 
         return redirect()->route($user->role . '.dashboard')
@@ -80,7 +69,7 @@ class StripeController extends Controller
     }
 
     /**
-     * Add payment method for entity (for super admin)
+     * Add payment method for user (for super admin)
      */
     public function addPaymentMethod(Request $request)
     {
@@ -90,10 +79,16 @@ class StripeController extends Controller
             'payment_method_data' => 'required|array',
         ]);
 
-        $entityClass = $request->entity_type === 'company' ? Company::class : Agent::class;
-        $entity = $entityClass::findOrFail($request->entity_id);
+        // Get the user from the entity
+        if ($request->entity_type === 'company') {
+            $company = Company::findOrFail($request->entity_id);
+            $user = $company->user;
+        } else {
+            $agent = Agent::findOrFail($request->entity_id);
+            $user = $agent->user;
+        }
 
-        $result = $this->stripeService->addPaymentMethod($entity, $request->payment_method_data);
+        $result = $this->stripeService->addPaymentMethod($user, $request->payment_method_data);
 
         if ($result['success']) {
             return response()->json([
@@ -119,12 +114,11 @@ class StripeController extends Controller
             'payment_method_id' => 'required|exists:payment_methods,id',
         ]);
 
-        $invoice = Invoice::with(['company', 'agent'])->findOrFail($request->invoice_id);
+        $invoice = Invoice::with(['company.user', 'agent.user'])->findOrFail($request->invoice_id);
         $paymentMethod = PaymentMethod::findOrFail($request->payment_method_id);
 
-        // Ensure the payment method belongs to the company
-        if ($paymentMethod->payable_type !== Company::class || 
-            $paymentMethod->payable_id !== $invoice->company_id) {
+        // Ensure the payment method belongs to the company user
+        if ($paymentMethod->user_id !== $invoice->company->user_id) {
             return response()->json(['error' => 'Invalid payment method for this invoice'], 400);
         }
 
@@ -185,17 +179,16 @@ class StripeController extends Controller
     public function getOnboardingStatus(Request $request)
     {
         $user = Auth::user();
-        $entity = $user->isCompany() ? $user->company : $user->agent;
 
-        if (!$entity) {
+        if (!$user->isCompany() && !$user->isAgent()) {
             return response()->json(['onboarding_complete' => false]);
         }
 
-        $result = $this->stripeService->checkOnboardingStatus($entity);
+        $result = $this->stripeService->checkOnboardingStatus($user);
 
         return response()->json([
             'onboarding_complete' => $result['onboarding_complete'] ?? false,
-            'account_id' => $entity->stripe_connect_account_id,
+            'account_id' => $user->stripe_connect_account_id,
         ]);
     }
 
@@ -209,10 +202,16 @@ class StripeController extends Controller
             'entity_id' => 'required|integer',
         ]);
 
-        $entityClass = $request->entity_type === 'company' ? Company::class : Agent::class;
-        $entity = $entityClass::findOrFail($request->entity_id);
+        // Get the user from the entity
+        if ($request->entity_type === 'company') {
+            $company = Company::findOrFail($request->entity_id);
+            $user = $company->user;
+        } else {
+            $agent = Agent::findOrFail($request->entity_id);
+            $user = $agent->user;
+        }
 
-        $result = $this->stripeService->createOnboardingLink($entity);
+        $result = $this->stripeService->createOnboardingLink($user);
 
         if ($result['success']) {
             return response()->json([

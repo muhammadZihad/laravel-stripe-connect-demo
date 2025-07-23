@@ -20,10 +20,6 @@ class Company extends Model
         'phone',
         'website',
         'tax_id',
-        'stripe_id',
-        'stripe_connect_account_id',
-        'stripe_onboarding_complete',
-        'stripe_capabilities',
         'is_active',
     ];
 

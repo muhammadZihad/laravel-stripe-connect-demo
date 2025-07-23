@@ -56,7 +56,7 @@ class AgentController extends Controller
             ->limit(5)
             ->get();
 
-        $stripeOnboardingComplete = $agent->isStripeOnboardingComplete();
+        $stripeOnboardingComplete = Auth::user()->isStripeOnboardingComplete();
 
         return view('agent.dashboard', compact(
             'agent', 'stats', 'recentInvoices', 'recentTransactions', 'stripeOnboardingComplete'
@@ -124,8 +124,8 @@ class AgentController extends Controller
      */
     public function paymentMethods()
     {
-        $agent = Auth::user();
-        $paymentMethods = $agent->paymentMethods()->get();
+        $user = Auth::user();
+        $paymentMethods = $user->paymentMethods()->get();
 
         return view('agent.payment-methods.index', compact('paymentMethods'));
     }
@@ -142,8 +142,8 @@ class AgentController extends Controller
             'is_default' => 'sometimes|boolean',
         ]);
 
-        $agent = Auth::user();
-        $result = $this->stripeService->attachPaymentMethod($agent, $request->payment_method_id, $request->boolean('is_default', false));
+        $user = Auth::user();
+        $result = $this->stripeService->attachPaymentMethod($user, $request->payment_method_id, $request->boolean('is_default', false));
 
         if ($result['success']) {
             return response()->json([
@@ -164,8 +164,7 @@ class AgentController extends Controller
         $user = Auth::user();
         
         // Ensure payment method belongs to this user
-        if ($paymentMethod->payable_type !== get_class($user) || 
-            $paymentMethod->payable_id !== $user->id) {
+        if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
         }
 
@@ -179,14 +178,17 @@ class AgentController extends Controller
         $user = Auth::user();
         
         // Ensure payment method belongs to this user
-        if ($paymentMethod->payable_type !== get_class($user) || 
-            $paymentMethod->payable_id !== $user->id) {
+        if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
         }
 
-        $paymentMethod->delete();
+        $result = $this->stripeService->deletePaymentMethod($paymentMethod);
 
-        return back()->with('success', 'Payment method deleted successfully!');
+        if ($result['success']) {
+            return back()->with('success', 'Payment method deleted successfully!');
+        }
+
+        return back()->with('error', 'Failed to delete payment method: ' . $result['error']);
     }
 
     /**
@@ -194,8 +196,10 @@ class AgentController extends Controller
      */
     public function initiateVerification(Request $request, PaymentMethod $paymentMethod)
     {
+        $user = Auth::user();
+        
         // Ensure this payment method belongs to the current user
-        if ($paymentMethod->payable_id !== Auth::user()->id || $paymentMethod->payable_type !== get_class(Auth::user())) {
+        if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
                 'success' => false,
                 'error' => 'Unauthorized access to payment method.',
@@ -208,7 +212,6 @@ class AgentController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => $result['message'],
-                'estimated_arrival' => $result['estimated_arrival'],
             ]);
         }
 
@@ -223,8 +226,10 @@ class AgentController extends Controller
      */
     public function showVerifyForm(PaymentMethod $paymentMethod)
     {
+        $user = Auth::user();
+        
         // Ensure this payment method belongs to the current user
-        if ($paymentMethod->payable_id !== Auth::user()->id || $paymentMethod->payable_type !== get_class(Auth::user())) {
+        if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized access to payment method.');
         }
 
@@ -242,8 +247,10 @@ class AgentController extends Controller
      */
     public function verifyMicroDeposits(Request $request, PaymentMethod $paymentMethod)
     {
+        $user = Auth::user();
+        
         // Ensure this payment method belongs to the current user
-        if ($paymentMethod->payable_id !== Auth::user()->id || $paymentMethod->payable_type !== get_class(Auth::user())) {
+        if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
                 'success' => false,
                 'error' => 'Unauthorized access to payment method.',
@@ -261,7 +268,7 @@ class AgentController extends Controller
             intval($request->amount_2 * 100), // Convert dollars to cents
         ];
 
-        $result = $this->stripeService->verifyMicroDepositAmounts($paymentMethod, $amounts);
+        $result = $this->stripeService->verifyMicroDeposits($paymentMethod, $amounts);
 
         if ($result['success']) {
             return response()->json([

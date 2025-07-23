@@ -19,10 +19,6 @@ class Agent extends Model
         'commission_rate',
         'department',
         'hire_date',
-        'stripe_id',
-        'stripe_connect_account_id',
-        'stripe_onboarding_complete',
-        'stripe_capabilities',
         'is_active',
     ];
 

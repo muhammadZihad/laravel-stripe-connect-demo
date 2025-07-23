@@ -200,14 +200,14 @@ class SuperAdminController extends Controller
     }
 
     /**
-     * Process invoice payment
+     * Process payment for invoice
      */
-    public function processInvoicePayment(Request $request, Invoice $invoice)
+    public function processPayment(Request $request, Invoice $invoice)
     {
         // If GET request, show the payment form
         if ($request->isMethod('GET')) {
-            // Get available payment methods for the company
-            $paymentMethods = $invoice->company->paymentMethods()
+            // Get available payment methods for the company user
+            $paymentMethods = $invoice->company->user->paymentMethods()
                 ->where('is_active', true)
                 ->get();
 
@@ -221,9 +221,8 @@ class SuperAdminController extends Controller
 
         $paymentMethod = PaymentMethod::findOrFail($request->payment_method_id);
 
-        // Ensure the payment method belongs to the company
-        if ($paymentMethod->payable_type !== Company::class || 
-            $paymentMethod->payable_id !== $invoice->company_id) {
+        // Ensure the payment method belongs to the company user
+        if ($paymentMethod->user_id !== $invoice->company->user_id) {
             return back()->with('error', 'Invalid payment method for this invoice.');
         }
 
@@ -267,10 +266,18 @@ class SuperAdminController extends Controller
             'payment_method_data' => 'required|array',
         ]);
 
-        $entityClass = $request->entity_type === 'company' ? Company::class : Agent::class;
-        $entity = $entityClass::findOrFail($request->entity_id);
+        // Get the user from the entity
+        if ($request->entity_type === 'company') {
+            $company = Company::findOrFail($request->entity_id);
+            $user = $company->user;
+            $entity = $company;
+        } else {
+            $agent = Agent::findOrFail($request->entity_id);
+            $user = $agent->user;
+            $entity = $agent;
+        }
 
-        $result = $this->stripeService->addPaymentMethod($entity, $request->payment_method_data);
+        $result = $this->stripeService->addPaymentMethod($user, $request->payment_method_data);
 
         if ($result['success']) {
             $redirectRoute = $request->entity_type === 'company' 

@@ -26,34 +26,51 @@ class StripeService
     }
 
     /**
-     * Create Stripe Connect account for company or agent
+     * Create Stripe Connect account for user (agent or company)
      */
-    public function createConnectAccount($entity, string $type = 'express'): array
+    public function createConnectAccount(User $user, string $type = 'express'): array
     {
         try {
+            // Determine business type based on user role
+            $businessType = $user->isCompany() ? 'company' : 'individual';
+            
+            // Get company or agent data for the account
+            $company = $user->company;
+            $agent = $user->agent;
+
             $account = Account::create([
                 'type' => $type,
                 'country' => 'US', // You may want to make this configurable
-                'email' => $entity->user->email,
+                'email' => $user->email,
                 'capabilities' => [
                     'card_payments' => ['requested' => true],
                     'transfers' => ['requested' => true],
+                    'us_bank_account_ach_payments' => ['requested' => true],
                 ],
-                'business_type' => $entity instanceof Company ? 'company' : 'individual',
-                'company' => $entity instanceof Company ? [
-                    'name' => $entity->company_name,
-                    'phone' => $entity->phone,
-                    'tax_id' => $entity->tax_id,
+                'configuration' => [
+                    'merchant' => [
+                        'capabilities' => [
+                            'card_payments' => ['requested' => true],
+                            'ach_debit_payments' => ['requested' => true],
+                            'us_bank_transfer_payments' => ['requested' => true],
+                        ]
+                    ],
+                ],                
+                'business_type' => $businessType,
+                'company' => $company ? [
+                    'name' => $company->company_name,
+                    'phone' => $company->phone,
+                    'tax_id' => $company->tax_id,
                 ] : null,
-                'individual' => $entity instanceof Agent ? [
-                    'email' => $entity->user->email,
-                    'first_name' => explode(' ', $entity->user->name)[0] ?? '',
-                    'last_name' => explode(' ', $entity->user->name)[1] ?? '',
+                'individual' => $agent ? [
+                    'email' => $user->email,
+                    'first_name' => explode(' ', $user->name)[0] ?? '',
+                    'last_name' => explode(' ', $user->name)[1] ?? '',
                 ] : null,
             ]);
 
-            // Update entity with Stripe account ID
-            $entity->update([
+            // Update user with Stripe account ID
+            $user->update([
                 'stripe_connect_account_id' => $account->id,
                 'stripe_capabilities' => $account->capabilities,
             ]);
@@ -75,18 +92,18 @@ class StripeService
     /**
      * Create onboarding link for Stripe Connect
      */
-    public function createOnboardingLink($entity): array
+    public function createOnboardingLink(User $user): array
     {
         try {
-            if (!$entity->stripe_connect_account_id) {
-                $result = $this->createConnectAccount($entity);
+            if (!$user->stripe_connect_account_id) {
+                $result = $this->createConnectAccount($user);
                 if (!$result['success']) {
                     return $result;
                 }
             }
 
             $accountLink = AccountLink::create([
-                'account' => $entity->stripe_connect_account_id,
+                'account' => $user->stripe_connect_account_id,
                 'refresh_url' => config('app.url') . '/stripe/connect/refresh',
                 'return_url' => config('app.url') . '/stripe/connect/return',
                 'type' => 'account_onboarding',
@@ -106,27 +123,26 @@ class StripeService
     }
 
     /**
-     * Check onboarding status
+     * Check onboarding status for user
      */
-    public function checkOnboardingStatus($entity): array
+    public function checkOnboardingStatus(User $user): array
     {
         try {
-            if (!$entity->stripe_connect_account_id) {
+            if (!$user->stripe_connect_account_id) {
                 return [
                     'success' => false,
                     'onboarding_complete' => false,
-                    'error' => 'No Stripe account found',
+                    'account_id' => null,
                 ];
             }
 
-            $account = Account::retrieve($entity->stripe_connect_account_id);
-            
+            $account = Account::retrieve($user->stripe_connect_account_id);
             $onboardingComplete = $account->details_submitted && 
                                  $account->charges_enabled && 
                                  $account->payouts_enabled;
 
-            // Update entity status
-            $entity->update([
+            // Update local status
+            $user->update([
                 'stripe_onboarding_complete' => $onboardingComplete,
                 'stripe_capabilities' => $account->capabilities,
             ]);
@@ -134,10 +150,14 @@ class StripeService
             return [
                 'success' => true,
                 'onboarding_complete' => $onboardingComplete,
-                'account' => $account,
+                'account_id' => $account->id,
+                'details_submitted' => $account->details_submitted,
+                'charges_enabled' => $account->charges_enabled,
+                'payouts_enabled' => $account->payouts_enabled,
+                'capabilities' => $account->capabilities,
             ];
         } catch (\Exception $e) {
-            Log::error('Stripe onboarding status check failed: ' . $e->getMessage());
+            Log::error('Onboarding status check failed: ' . $e->getMessage());
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -151,14 +171,38 @@ class StripeService
     public function createPaymentIntent(Invoice $invoice, PaymentMethod $paymentMethod, float $adminCommission = 2.00): array
     {
         try {
+            // Get agent user for Connect account validation
+            $agentUser = $invoice->agent->user;
+            
+            // Check if agent has completed Stripe Connect onboarding
+            if (!$agentUser->stripe_connect_account_id) {
+                return [
+                    'success' => false,
+                    'error' => 'Agent has not completed Stripe Connect onboarding. Please contact the agent to complete their account setup.',
+                ];
+            }
+
+            // Verify agent's onboarding status
+            $onboardingCheck = $this->checkOnboardingStatus($agentUser);
+            if (!$onboardingCheck['success'] || !$onboardingCheck['onboarding_complete']) {
+                return [
+                    'success' => false,
+                    'error' => 'Agent\'s Stripe Connect account is not fully set up. Please ask the agent to complete their onboarding process.',
+                ];
+            }
+
             // Calculate amounts
             $totalAmount = $invoice->total_amount * 100; // Convert to cents
-            $adminCommissionCents = $adminCommission * 100;
+            
+            // Calculate application fee: 10% of total but between $1-$4
+            $applicationFeeFloat = $invoice->total_amount * 0.1; // 10% of total
+            $applicationFeeFloat = max(1.00, min(4.00, $applicationFeeFloat)); // Constrain between $1-$4
+            $adminCommissionCents = round($applicationFeeFloat * 100); // Convert to cents
 
             $paymentIntent = PaymentIntent::create([
                 'amount' => $totalAmount,
                 'currency' => 'usd',
-                'customer' => $this->getOrCreateCustomer($invoice->company),
+                'customer' => $this->getOrCreateCustomer($paymentMethod->user),
                 'payment_method' => $paymentMethod->stripe_payment_method_id,
                 'confirm' => true,
                 'automatic_payment_methods' => [
@@ -166,14 +210,14 @@ class StripeService
                     'allow_redirects' => 'never',
                 ],
                 'transfer_data' => [
-                    'destination' => $invoice->agent->stripe_connect_account_id,
+                    'destination' => $agentUser->stripe_connect_account_id,
                 ],
                 'application_fee_amount' => $adminCommissionCents,
                 'metadata' => [
                     'invoice_id' => $invoice->id,
                     'company_id' => $invoice->company_id,
                     'agent_id' => $invoice->agent_id,
-                    'admin_commission' => $adminCommission,
+                    'admin_commission' => $applicationFeeFloat,
                 ],
             ]);
 
@@ -184,8 +228,8 @@ class StripeService
                 'company_id' => $invoice->company_id,
                 'agent_id' => $invoice->agent_id,
                 'amount' => $invoice->total_amount,
-                'admin_commission' => $adminCommission,
-                'net_amount' => $invoice->total_amount - $adminCommission,
+                'admin_commission' => $applicationFeeFloat,
+                'net_amount' => $invoice->total_amount - $applicationFeeFloat,
                 'type' => 'payment',
                 'status' => $paymentIntent->status === 'succeeded' ? 'completed' : 'pending',
                 'stripe_payment_intent_id' => $paymentIntent->id,
@@ -213,86 +257,12 @@ class StripeService
     }
 
     /**
-     * Create demo payment for testing purposes
+     * Add payment method to user
      */
-    private function createDemoPayment(Invoice $invoice, PaymentMethod $paymentMethod, float $adminCommission = 2.00): array
+    public function addPaymentMethod(User $user, array $paymentMethodData): array
     {
         try {
-            // Simulate successful payment
-            $demoPaymentIntentId = 'pi_demo_' . time() . '_' . rand(1000, 9999);
-            
-            // Create transaction record
-            $transaction = Transaction::create([
-                'transaction_id' => Transaction::generateTransactionId(),
-                'invoice_id' => $invoice->id,
-                'company_id' => $invoice->company_id,
-                'agent_id' => $invoice->agent_id,
-                'amount' => $invoice->total_amount,
-                'admin_commission' => $adminCommission,
-                'net_amount' => $invoice->total_amount - $adminCommission,
-                'type' => 'payment',
-                'status' => 'completed',
-                'stripe_payment_intent_id' => $demoPaymentIntentId,
-                'stripe_transfer_id' => 'tr_demo_' . time() . '_' . rand(1000, 9999),
-                'payment_method_type' => $paymentMethod->type,
-                'stripe_metadata' => json_encode([
-                    'demo' => true,
-                    'invoice_id' => $invoice->id,
-                    'company_id' => $invoice->company_id,
-                    'agent_id' => $invoice->agent_id,
-                    'admin_commission' => $adminCommission,
-                    'processed_at' => now()->toISOString(),
-                ]),
-                'notes' => 'Demo payment processed successfully',
-                'processed_at' => now(),
-            ]);
-
-            // Mark invoice as paid
-            $invoice->update([
-                'status' => 'paid',
-                'paid_date' => now(),
-                'stripe_payment_intent_id' => $demoPaymentIntentId,
-            ]);
-
-            $transaction->markAsCompleted();
-
-            Log::info('Demo payment processed successfully', [
-                'invoice_id' => $invoice->id,
-                'transaction_id' => $transaction->id,
-                'amount' => $invoice->total_amount,
-            ]);
-
-            return [
-                'success' => true,
-                'payment_intent' => (object) [
-                    'id' => $demoPaymentIntentId,
-                    'status' => 'succeeded',
-                    'amount' => $invoice->total_amount * 100,
-                    'currency' => 'usd',
-                    'metadata' => [
-                        'demo' => true,
-                        'invoice_id' => $invoice->id,
-                    ],
-                ],
-                'transaction' => $transaction,
-                'demo_mode' => true,
-            ];
-        } catch (\Exception $e) {
-            Log::error('Demo payment creation failed: ' . $e->getMessage());
-            return [
-                'success' => false,
-                'error' => $e->getMessage(),
-            ];
-        }
-    }
-
-    /**
-     * Add payment method to company or agent
-     */
-    public function addPaymentMethod($entity, array $paymentMethodData): array
-    {
-        try {
-            $customer = $this->getOrCreateCustomer($entity);
+            $customer = $this->getOrCreateCustomer($user);
             
             $stripePaymentMethod = StripePaymentMethod::create([
                 'type' => $paymentMethodData['type'],
@@ -303,7 +273,7 @@ class StripeService
             $stripePaymentMethod->attach(['customer' => $customer]);
 
             // Store in database
-            $paymentMethod = $entity->paymentMethods()->create([
+            $paymentMethod = $user->paymentMethods()->create([
                 'stripe_payment_method_id' => $stripePaymentMethod->id,
                 'type' => $stripePaymentMethod->type,
                 'brand' => $stripePaymentMethod->card->brand ?? null,
@@ -312,7 +282,7 @@ class StripeService
                 'exp_year' => $stripePaymentMethod->card->exp_year ?? null,
                 'bank_name' => $stripePaymentMethod->bank_account->bank_name ?? null,
                 'account_holder_type' => $stripePaymentMethod->bank_account->account_holder_type ?? null,
-                'is_default' => $entity->paymentMethods()->count() === 0, // First payment method is default
+                'is_default' => $user->paymentMethods()->count() === 0, // First payment method is default
                 'stripe_metadata' => $stripePaymentMethod->metadata->toArray(),
             ]);
 
@@ -331,13 +301,13 @@ class StripeService
     }
 
     /**
-     * Attach existing payment method to entity
+     * Attach existing payment method to user
      */
-    public function attachPaymentMethod($entity, string $paymentMethodId, bool $isDefault = false): array
+    public function attachPaymentMethod(User $user, string $paymentMethodId, bool $isDefault = false): array
     {
         try {
-            // Get or create customer for entity
-            $customer = $this->getOrCreateCustomer($entity);
+            // Get or create customer for user
+            $customer = $this->getOrCreateCustomer($user);
             
             // Retrieve the payment method from Stripe
             $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethodId);
@@ -345,7 +315,7 @@ class StripeService
             // Handle US bank account verification requirement
             if ($stripePaymentMethod->type === 'us_bank_account') {
                 // Store as unverified and require verification
-                return $this->storeUnverifiedBankAccount($entity, $stripePaymentMethod, $isDefault);
+                return $this->storeUnverifiedBankAccount($user, $stripePaymentMethod, $isDefault);
             }
             
             // Attach to customer if not already attached (for cards)
@@ -354,16 +324,16 @@ class StripeService
             }
 
             // Set as default if requested or if it's the first payment method
-            $isFirstPaymentMethod = $entity->paymentMethods()->count() === 0;
+            $isFirstPaymentMethod = $user->paymentMethods()->count() === 0;
             $shouldSetDefault = $isDefault || $isFirstPaymentMethod;
 
             // If setting as default, unset other defaults
             if ($shouldSetDefault) {
-                $entity->paymentMethods()->update(['is_default' => false]);
+                $user->paymentMethods()->update(['is_default' => false]);
             }
 
             // Store in database
-            $paymentMethod = $entity->paymentMethods()->create([
+            $paymentMethod = $user->paymentMethods()->create([
                 'stripe_payment_method_id' => $stripePaymentMethod->id,
                 'type' => $stripePaymentMethod->type,
                 'brand' => $stripePaymentMethod->card->brand ?? null,
@@ -388,12 +358,11 @@ class StripeService
             // Check if this is a bank account verification error
             if (str_contains($e->getMessage(), 'must be verified before they can be attached')) {
                 // Handle bank account verification requirement
-                return $this->handleBankAccountVerification($entity, $paymentMethodId, $isDefault, $e);
+                return $this->handleBankAccountVerification($user, $paymentMethodId, $isDefault, $e);
             }
             
             Log::error('Payment method attachment failed: ' . $e->getMessage(), [
-                'entity_type' => get_class($entity),
-                'entity_id' => $entity->id,
+                'user_id' => $user->id,
                 'payment_method_id' => $paymentMethodId,
             ]);
             
@@ -407,37 +376,36 @@ class StripeService
     /**
      * Store unverified bank account for verification
      */
-    private function storeUnverifiedBankAccount($entity, $stripePaymentMethod, bool $isDefault = false): array
+    private function storeUnverifiedBankAccount(User $user, $stripePaymentMethod, bool $isDefault = false): array
     {
         try {
             // Set as default if requested or if it's the first payment method
-            $isFirstPaymentMethod = $entity->paymentMethods()->count() === 0;
+            $isFirstPaymentMethod = $user->paymentMethods()->count() === 0;
             $shouldSetDefault = $isDefault || $isFirstPaymentMethod;
 
             // If setting as default, unset other defaults
             if ($shouldSetDefault) {
-                $entity->paymentMethods()->update(['is_default' => false]);
+                $user->paymentMethods()->update(['is_default' => false]);
             }
 
-            // Store bank account in verification_required state
-            $paymentMethod = $entity->paymentMethods()->create([
+            // Create bank account entry
+            $paymentMethod = $user->paymentMethods()->create([
                 'stripe_payment_method_id' => $stripePaymentMethod->id,
                 'type' => 'us_bank_account',
                 'brand' => null,
-                'last_four' => $stripePaymentMethod->us_bank_account->last4,
+                'last_four' => $stripePaymentMethod->us_bank_account->last4 ?? null,
                 'exp_month' => null,
                 'exp_year' => null,
-                'bank_name' => $stripePaymentMethod->us_bank_account->bank_name,
-                'account_holder_type' => $stripePaymentMethod->us_bank_account->account_holder_type,
+                'bank_name' => $stripePaymentMethod->us_bank_account->bank_name ?? null,
+                'account_holder_type' => $stripePaymentMethod->us_bank_account->account_holder_type ?? null,
                 'is_default' => false, // Don't set as default until verified
                 'is_active' => false, // Not active until verified
                 'verification_status' => 'verification_required',
                 'stripe_metadata' => $stripePaymentMethod->metadata->toArray(),
             ]);
 
-            Log::info('Bank account stored pending verification', [
-                'entity_type' => get_class($entity),
-                'entity_id' => $entity->id,
+            Log::info('Bank account stored for verification', [
+                'user_id' => $user->id,
                 'payment_method_id' => $paymentMethod->id,
                 'stripe_payment_method_id' => $stripePaymentMethod->id,
             ]);
@@ -450,7 +418,7 @@ class StripeService
                 'message' => 'Bank account added successfully. Please verify using micro-deposits to activate.',
             ];
         } catch (\Exception $e) {
-            Log::error('Unverified bank account storage failed: ' . $e->getMessage());
+            Log::error('Bank account storage failed: ' . $e->getMessage());
             return [
                 'success' => false,
                 'error' => 'Failed to store bank account: ' . $e->getMessage(),
@@ -461,21 +429,21 @@ class StripeService
     /**
      * Handle bank account verification requirement
      */
-    private function handleBankAccountVerification($entity, string $paymentMethodId, bool $isDefault, \Exception $originalException): array
+    private function handleBankAccountVerification(User $user, string $paymentMethodId, bool $isDefault, \Exception $originalException): array
     {
         try {
-            // Retrieve the payment method details for demo purposes
+            // Retrieve the payment method details
             $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethodId);
             
-            // Create demo entry since verification is complex for demo
-            return $this->createDemoBankAccount($entity, $stripePaymentMethod, $isDefault);
+            // Store unverified bank account for verification
+            return $this->storeUnverifiedBankAccount($user, $stripePaymentMethod, $isDefault);
             
         } catch (\Exception $e) {
             Log::error('Bank account verification handling failed: ' . $e->getMessage());
             
             return [
                 'success' => false,
-                'error' => 'Bank account verification required. In a production environment, you would need to complete ACH verification before using this payment method.',
+                'error' => 'Bank account verification required. US bank accounts must be verified before they can be used for payments.',
                 'verification_required' => true,
                 'original_error' => $originalException->getMessage(),
             ];
@@ -483,37 +451,24 @@ class StripeService
     }
 
     /**
-     * Initiate micro-deposit verification for a bank account
+     * Initiate micro-deposit verification for bank account
      */
-    public function initiateMicroDepositVerification($paymentMethod): array
+    public function initiateMicroDepositVerification(PaymentMethod $paymentMethod): array
     {
         try {
-            // Check if payment method is eligible for verification
             if ($paymentMethod->type !== 'us_bank_account') {
                 return [
                     'success' => false,
-                    'error' => 'Only US bank accounts can be verified with micro-deposits.',
+                    'error' => 'Only US bank accounts require micro-deposit verification.',
                 ];
             }
 
-            if ($paymentMethod->verification_status === 'verified') {
+            if (!$paymentMethod->canAttemptVerification()) {
                 return [
                     'success' => false,
-                    'error' => 'This payment method is already verified.',
+                    'error' => 'This payment method cannot be verified. Maximum attempts reached or already verified.',
                 ];
             }
-
-            // Check verification attempts limit
-            if ($paymentMethod->verification_attempts >= 3) {
-                return [
-                    'success' => false,
-                    'error' => 'Maximum verification attempts exceeded. Please contact support.',
-                ];
-            }
-
-            // Get or create customer for the payment method owner
-            $entity = $paymentMethod->payable;
-            $customer = $this->getOrCreateCustomer($entity);
 
             // Create a SetupIntent for micro-deposit verification
             // Note: US bank accounts must be verified before they can be attached to customers
@@ -527,9 +482,12 @@ class StripeService
                 ],
                 'confirm' => true,
                 'usage' => 'off_session',
+                'automatic_payment_methods' => [
+                    'enabled' => false,
+                ],
             ]);
 
-            // Update local payment method record
+            // Update payment method status
             $paymentMethod->update([
                 'verification_status' => 'pending_verification',
                 'verification_attempts' => $paymentMethod->verification_attempts + 1,
@@ -537,31 +495,19 @@ class StripeService
                 'verification_initiated_at' => now(),
                 'verification_metadata' => [
                     'setup_intent_id' => $setupIntent->id,
-                    'initiated_at' => now()->toISOString(),
-                    'attempt_number' => $paymentMethod->verification_attempts + 1,
+                    'status' => $setupIntent->status,
+                    'next_action' => $setupIntent->next_action,
                 ],
-            ]);
-
-            Log::info('Micro-deposit verification initiated', [
-                'payment_method_id' => $paymentMethod->id,
-                'stripe_payment_method_id' => $paymentMethod->stripe_payment_method_id,
-                'setup_intent_id' => $setupIntent->id,
-                'attempt_number' => $paymentMethod->verification_attempts,
             ]);
 
             return [
                 'success' => true,
                 'setup_intent' => $setupIntent,
-                'message' => 'Micro-deposits have been sent to your bank account. This typically takes 1-2 business days.',
-                'estimated_arrival' => 'Micro-deposits should arrive within 1-2 business days.',
+                'verification_initiated' => true,
+                'message' => 'Micro-deposit verification initiated. Deposits should appear within 1-2 business days.',
             ];
-
         } catch (\Exception $e) {
-            Log::error('Micro-deposit verification initiation failed: ' . $e->getMessage(), [
-                'payment_method_id' => $paymentMethod->id,
-                'stripe_payment_method_id' => $paymentMethod->stripe_payment_method_id,
-            ]);
-
+            Log::error('Micro-deposit verification failed: ' . $e->getMessage());
             return [
                 'success' => false,
                 'error' => 'Failed to initiate verification: ' . $e->getMessage(),
@@ -570,114 +516,70 @@ class StripeService
     }
 
     /**
-     * Verify micro-deposit amounts
+     * Verify micro-deposits for bank account
      */
-    public function verifyMicroDepositAmounts($paymentMethod, array $amounts): array
+    public function verifyMicroDeposits(PaymentMethod $paymentMethod, array $amounts): array
     {
         try {
-            // Check if payment method has a verification session
             if (!$paymentMethod->stripe_verification_session_id) {
                 return [
                     'success' => false,
-                    'error' => 'No verification session found. Please initiate verification first.',
+                    'error' => 'No verification session found for this payment method.',
                 ];
             }
 
-            if ($paymentMethod->verification_status === 'verified') {
-                return [
-                    'success' => false,
-                    'error' => 'This payment method is already verified.',
-                ];
-            }
-
-            // Verify the amounts with Stripe using SetupIntent
+            // Get the SetupIntent
             $setupIntent = SetupIntent::retrieve($paymentMethod->stripe_verification_session_id);
             
-            // Use the verify microdeposits method on SetupIntent
-            $verificationResult = $setupIntent->verifyMicrodeposits([
-                'amounts' => $amounts
-            ]);
+            // Verify the micro-deposits
+            $setupIntent->verifyMicrodeposits(['amounts' => $amounts]);
 
-            // Check verification status
-            if ($verificationResult->status === 'succeeded') {
-                // Now that verification succeeded, attach to customer
-                $entity = $paymentMethod->payable;
-                $customer = $this->getOrCreateCustomer($entity);
-                $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethod->stripe_payment_method_id);
+            // Attach verified payment method to customer
+            $customerId = $this->getOrCreateCustomer($paymentMethod->user);
+            $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethod->stripe_payment_method_id);
+            
+            // Attach to customer now that it's verified
+            if (!$stripePaymentMethod->customer) {
+                $stripePaymentMethod->attach(['customer' => $customerId]);
                 
-                if (!$stripePaymentMethod->customer) {
-                    $stripePaymentMethod->attach(['customer' => $customer]);
-                }
-
-                // Update payment method as verified and active
-                $paymentMethod->update([
-                    'verification_status' => 'verified',
-                    'is_active' => true,
-                    'verified_at' => now(),
-                    'verification_metadata' => array_merge(
-                        $paymentMethod->verification_metadata ?? [],
-                        [
-                            'verified_at' => now()->toISOString(),
-                            'setup_intent_status' => $verificationResult->status,
-                        ]
-                    ),
-                ]);
-
-                // Set as default if it's the first active payment method
-                if (!$entity->paymentMethods()->where('is_default', true)->where('is_active', true)->exists()) {
-                    $paymentMethod->update(['is_default' => true]);
-                }
-
-                Log::info('Micro-deposit verification successful', [
+                Log::info('Verified bank account attached to customer', [
                     'payment_method_id' => $paymentMethod->id,
                     'stripe_payment_method_id' => $paymentMethod->stripe_payment_method_id,
-                    'setup_intent_id' => $verificationResult->id,
+                    'customer_id' => $customerId,
+                    'user_id' => $paymentMethod->user->id,
                 ]);
-
-                return [
-                    'success' => true,
-                    'message' => 'Bank account verified successfully! You can now use this payment method.',
-                    'payment_method' => $paymentMethod->fresh(),
-                ];
-            } else {
-                // Verification failed
-                $paymentMethod->update([
-                    'verification_status' => 'failed',
-                    'verification_metadata' => array_merge(
-                        $paymentMethod->verification_metadata ?? [],
-                        [
-                            'failed_at' => now()->toISOString(),
-                            'setup_intent_status' => $verificationResult->status,
-                            'failure_reason' => 'Incorrect micro-deposit amounts',
-                        ]
-                    ),
-                ]);
-
-                return [
-                    'success' => false,
-                    'error' => 'Verification failed. The amounts you entered do not match our records.',
-                ];
             }
 
-        } catch (\Exception $e) {
-            Log::error('Micro-deposit verification failed: ' . $e->getMessage(), [
-                'payment_method_id' => $paymentMethod->id,
-                'stripe_payment_method_id' => $paymentMethod->stripe_payment_method_id,
-                'amounts' => $amounts,
+            // Update payment method as verified
+            $paymentMethod->update([
+                'verification_status' => 'verified',
+                'verified_at' => now(),
+                'is_active' => true,
+                'verification_metadata' => array_merge(
+                    $paymentMethod->verification_metadata ?? [],
+                    ['verified_at' => now()->toISOString()]
+                ),
             ]);
 
+            return [
+                'success' => true,
+                'verified' => true,
+                'message' => 'Bank account verified successfully and attached to customer!',
+            ];
+        } catch (\Exception $e) {
             // Update verification status to failed
             $paymentMethod->update([
                 'verification_status' => 'failed',
                 'verification_metadata' => array_merge(
                     $paymentMethod->verification_metadata ?? [],
                     [
-                        'failed_at' => now()->toISOString(),
                         'error' => $e->getMessage(),
+                        'failed_at' => now()->toISOString(),
                     ]
                 ),
             ]);
 
+            Log::error('Micro-deposit verification failed: ' . $e->getMessage());
             return [
                 'success' => false,
                 'error' => 'Verification failed: ' . $e->getMessage(),
@@ -686,34 +588,54 @@ class StripeService
     }
 
     /**
-     * Get or create Stripe customer for entity
+     * Delete payment method
      */
-    private function getOrCreateCustomer($entity): string
+    public function deletePaymentMethod(PaymentMethod $paymentMethod): array
     {
-        if (!($entity instanceof User)) {
-            $entity = $entity->loadMissing('user')->user;
-        }
-        // Check if entity has a stripe_customer_id field or create one
-        if (!$entity->stripe_id ?? null) {
-            // For User entities
-            $email = $entity->email;
-            $name = $entity->name;
+        try {
+            // Delete from Stripe
+            $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethod->stripe_payment_method_id);
+            $stripePaymentMethod->detach();
 
+            // Delete from database
+            $paymentMethod->delete();
+
+            return [
+                'success' => true,
+                'message' => 'Payment method deleted successfully.',
+            ];
+        } catch (\Exception $e) {
+            Log::error('Payment method deletion failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Get or create Stripe customer for user
+     */
+    private function getOrCreateCustomer(User $user): string
+    {
+        // Check if user has a stripe_id field or create one
+        if (!$user->stripe_id) {
             $customer = Customer::create([
-                'email' => $email,
-                'name' => $name,
+                'email' => $user->email,
+                'name' => $user->name,
                 'metadata' => [
-                    'entity_type' => get_class($entity),
-                    'entity_id' => $entity->id,
+                    'user_id' => $user->id,
+                    'user_role' => $user->role,
                 ],
             ]);
-            // Update entity with Stripe customer ID
-            $entity->update(['stripe_id' => $customer->id]);
+            
+            // Update user with Stripe customer ID
+            $user->update(['stripe_id' => $customer->id]);
             
             return $customer->id;
         }
 
-        return $entity->stripe_id;
+        return $user->stripe_id;
     }
 
     /**
@@ -763,21 +685,11 @@ class StripeService
 
     private function handleAccountUpdated(array $account): void
     {
-        // Update company or agent based on account ID
-        $company = Company::where('stripe_connect_account_id', $account['id'])->first();
-        if ($company) {
-            $company->update([
-                'stripe_capabilities' => $account['capabilities'],
-                'stripe_onboarding_complete' => $account['details_submitted'] && 
-                                                $account['charges_enabled'] && 
-                                                $account['payouts_enabled'],
-            ]);
-            return;
-        }
-
-        $agent = Agent::where('stripe_connect_account_id', $account['id'])->first();
-        if ($agent) {
-            $agent->update([
+        // Update user based on account ID
+        $user = User::where('stripe_connect_account_id', $account['id'])->first();
+        
+        if ($user) {
+            $user->update([
                 'stripe_capabilities' => $account['capabilities'],
                 'stripe_onboarding_complete' => $account['details_submitted'] && 
                                                 $account['charges_enabled'] && 

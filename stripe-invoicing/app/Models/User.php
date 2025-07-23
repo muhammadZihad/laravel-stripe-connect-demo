@@ -4,7 +4,7 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Relations\HasOne;
@@ -98,8 +98,16 @@ class User extends Authenticatable
         return $this->hasOne(Agent::class);
     }
 
-    public function paymentMethods(): MorphMany
+    /**
+     * Get payment methods for this user
+     */
+    public function paymentMethods(): HasMany
     {
-        return $this->morphMany(PaymentMethod::class, 'payable');
+        return $this->hasMany(PaymentMethod::class);
+    }
+
+    public function isStripeOnboardingComplete(): bool
+    {
+        return $this->stripe_onboarding_complete && !empty($this->stripe_connect_account_id);
     }
 }

@@ -54,7 +54,7 @@ class CompanyController extends Controller
             ->limit(5)
             ->get();
 
-        $stripeOnboardingComplete = $company->isStripeOnboardingComplete();
+        $stripeOnboardingComplete = Auth::user()->isStripeOnboardingComplete();
 
         return view('company.dashboard', compact(
             'company', 'stats', 'recentInvoices', 'recentTransactions', 'stripeOnboardingComplete'
@@ -240,8 +240,8 @@ class CompanyController extends Controller
      */
     public function paymentMethods()
     {
-        $company = Auth::user();
-        $paymentMethods = $company->paymentMethods()->get();
+        $user = Auth::user();
+        $paymentMethods = $user->paymentMethods()->get();
 
         return view('company.payment-methods.index', compact('paymentMethods'));
     }
@@ -258,8 +258,8 @@ class CompanyController extends Controller
             'is_default' => 'sometimes|boolean',
         ]);
 
-        $company = Auth::user();
-        $result = $this->stripeService->attachPaymentMethod($company, $request->payment_method_id, $request->boolean('is_default', false));
+        $user = Auth::user();
+        $result = $this->stripeService->attachPaymentMethod($user, $request->payment_method_id, $request->boolean('is_default', false));
 
         if ($result['success']) {
             return response()->json([
@@ -277,10 +277,10 @@ class CompanyController extends Controller
 
     public function setDefaultPaymentMethod(PaymentMethod $paymentMethod)
     {
-        $company = Auth::user()->company;
+        $user = Auth::user();
         
-        // Ensure payment method belongs to this company
-        if ($paymentMethod->payable_id !== Auth::user()->id) {
+        // Ensure payment method belongs to this user
+        if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
         }
 
@@ -291,16 +291,20 @@ class CompanyController extends Controller
 
     public function deletePaymentMethod(PaymentMethod $paymentMethod)
     {
-        $company = Auth::user()->company;
+        $user = Auth::user();
         
-        // Ensure payment method belongs to this company
-        if ($paymentMethod->payable_id !== Auth::user()->id) {
+        // Ensure payment method belongs to this user
+        if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
         }
 
-        $paymentMethod->delete();
+        $result = $this->stripeService->deletePaymentMethod($paymentMethod);
 
-        return back()->with('success', 'Payment method deleted successfully!');
+        if ($result['success']) {
+            return back()->with('success', 'Payment method deleted successfully!');
+        }
+
+        return back()->with('error', 'Failed to delete payment method: ' . $result['error']);
     }
 
     /**
@@ -308,8 +312,10 @@ class CompanyController extends Controller
      */
     public function initiateVerification(Request $request, PaymentMethod $paymentMethod)
     {
-        // Ensure this payment method belongs to the current company
-        if ($paymentMethod->payable_id !== Auth::user()->id) {
+        $user = Auth::user();
+        
+        // Ensure this payment method belongs to the current user
+        if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
                 'success' => false,
                 'error' => 'Unauthorized access to payment method.',
@@ -322,7 +328,6 @@ class CompanyController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => $result['message'],
-                'estimated_arrival' => $result['estimated_arrival'],
             ]);
         }
 
@@ -337,8 +342,10 @@ class CompanyController extends Controller
      */
     public function showVerifyForm(PaymentMethod $paymentMethod)
     {
-        // Ensure this payment method belongs to the current company
-        if ($paymentMethod->payable_id !== Auth::user()->id) {
+        $user = Auth::user();
+        
+        // Ensure this payment method belongs to the current user
+        if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized access to payment method.');
         }
 
@@ -356,8 +363,10 @@ class CompanyController extends Controller
      */
     public function verifyMicroDeposits(Request $request, PaymentMethod $paymentMethod)
     {
-        // Ensure this payment method belongs to the current company
-        if ($paymentMethod->payable_id !== Auth::user()->id) {
+        $user = Auth::user();
+        
+        // Ensure this payment method belongs to the current user
+        if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
                 'success' => false,
                 'error' => 'Unauthorized access to payment method.',
@@ -375,7 +384,7 @@ class CompanyController extends Controller
             intval($request->amount_2 * 100), // Convert dollars to cents
         ];
 
-        $result = $this->stripeService->verifyMicroDepositAmounts($paymentMethod, $amounts);
+        $result = $this->stripeService->verifyMicroDeposits($paymentMethod, $amounts);
 
         if ($result['success']) {
             return response()->json([
@@ -463,7 +472,7 @@ class CompanyController extends Controller
                 ->with('error', 'This invoice has already been paid.');
         }
 
-        // Get available payment methods for the company
+        // Get available payment methods for the user
         $paymentMethods = Auth::user()->paymentMethods()
             ->where('is_active', true)
             ->get();
@@ -494,8 +503,8 @@ class CompanyController extends Controller
 
         $paymentMethod = PaymentMethod::findOrFail($request->payment_method_id);
 
-        // Ensure the payment method belongs to the company
-        if ($paymentMethod->payable_id !== Auth::user()->id) {
+        // Ensure the payment method belongs to the current user
+        if ($paymentMethod->user_id !== Auth::user()->id) {
             return back()->with('error', 'Invalid payment method for this invoice.');
         }
 
