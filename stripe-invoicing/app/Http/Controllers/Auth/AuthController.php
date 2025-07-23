@@ -19,7 +19,46 @@ class AuthController extends Controller
      */
     public function showLogin()
     {
-        return view('auth.login');
+        // Get all companies with their related data
+        $companies = Company::with([
+            'user', 
+            'invoices' => function($query) {
+                $query->latest()->limit(3);
+            }
+        ])->get()->map(function($company) {
+            return [
+                'id' => $company->id,
+                'company_name' => $company->company_name,
+                'user' => $company->user,
+                'invoices_count' => $company->invoices()->count(),
+                'recent_invoices' => $company->invoices,
+                'stripe_onboarding_complete' => $company->user->stripe_onboarding_complete,
+                'stripe_connect_account_id' => $company->user->stripe_connect_account_id,
+            ];
+        });
+
+        // Get all agents with their related data
+        $agents = Agent::with([
+            'user', 
+            'company',
+            'invoices' => function($query) {
+                $query->latest()->limit(3);
+            }
+        ])->get()->map(function($agent) {
+            return [
+                'id' => $agent->id,
+                'name' => $agent->user->name,
+                'agent_code' => $agent->agent_code,
+                'user' => $agent->user,
+                'company' => $agent->company,
+                'invoices_count' => $agent->invoices()->count(),
+                'recent_invoices' => $agent->invoices,
+                'stripe_onboarding_complete' => $agent->user->stripe_onboarding_complete,
+                'stripe_connect_account_id' => $agent->user->stripe_connect_account_id,
+            ];
+        });
+
+        return view('auth.login', compact('companies', 'agents'));
     }
 
     /**
@@ -54,6 +93,37 @@ class AuthController extends Controller
         return back()->withErrors([
             'email' => 'The provided credentials do not match our records.',
         ]);
+    }
+
+    /**
+     * Quick login for demo purposes
+     */
+    public function quickLogin(Request $request)
+    {
+        $request->validate([
+            'user_id' => 'required|exists:users,id',
+        ]);
+
+        $user = User::findOrFail($request->user_id);
+        
+        Auth::login($user);
+        $request->session()->regenerate();
+        
+        // Redirect based on role
+        switch ($user->role) {
+            case 'super_admin':
+                return redirect()->route('super_admin.dashboard')
+                    ->with('success', 'Quick login successful!');
+            case 'company':
+                return redirect()->route('company.dashboard')
+                    ->with('success', 'Quick login successful!');
+            case 'agent':
+                return redirect()->route('agent.dashboard')
+                    ->with('success', 'Quick login successful!');
+            default:
+                Auth::logout();
+                return back()->withErrors(['error' => 'Invalid user role.']);
+        }
     }
 
     /**
