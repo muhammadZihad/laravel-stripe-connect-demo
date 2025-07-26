@@ -16,30 +16,6 @@ class CompanySeeder extends Seeder
     {
         $companies = [
             [
-                'email' => 'john@techcorp.com',
-                'company_data' => [
-                    'company_name' => 'TechCorp Solutions',
-                    'business_type' => 'Technology',
-                    'address' => '123 Tech Street, San Francisco, CA 94105',
-                    'phone' => '+1 (555) 123-4567',
-                    'website' => 'https://techcorp.com',
-                    'tax_id' => '12-3456789',
-                    'is_active' => true,
-                ]
-            ],
-            [
-                'email' => 'sarah@marketingpro.com',
-                'company_data' => [
-                    'company_name' => 'MarketingPro Agency',
-                    'business_type' => 'Marketing & Advertising',
-                    'address' => '456 Marketing Ave, New York, NY 10001',
-                    'phone' => '+1 (555) 234-5678',
-                    'website' => 'https://marketingpro.com',
-                    'tax_id' => '23-4567890',
-                    'is_active' => true,
-                ]
-            ],
-            [
                 'email' => 'michael@consultgroup.com',
                 'company_data' => [
                     'company_name' => 'Consultant Group LLC',
@@ -48,6 +24,18 @@ class CompanySeeder extends Seeder
                     'phone' => '+1 (555) 345-6789',
                     'website' => 'https://consultgroup.com',
                     'tax_id' => '34-5678901',
+                    'is_active' => true,
+                ]
+            ],
+            [
+                'email' => 'support@mybrokercloud.com',
+                'company_data' => [
+                    'company_name' => 'My Broker Cloud',
+                    'business_type' => 'Real Estate Brokerage',
+                    'address' => '123 Broker Street, Business District',
+                    'phone' => '0000000000',
+                    'website' => 'https://mybrokercloud.com',
+                    'tax_id' => null,
                     'is_active' => true,
                 ]
             ],

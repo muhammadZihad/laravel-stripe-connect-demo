@@ -46,6 +46,13 @@ class UserSeeder extends Seeder
                 'role' => 'company',
                 'email_verified_at' => now(),
             ],
+            [
+                'name' => 'My Broker Cloud',
+                'email' => 'support@mybrokercloud.com',
+                'password' => Hash::make('password'),
+                'role' => 'company',
+                'email_verified_at' => now(),
+            ],
         ];
 
         foreach ($companyUsers as $userData) {
@@ -92,6 +99,20 @@ class UserSeeder extends Seeder
             [
                 'name' => 'Frank Martinez',
                 'email' => 'frank@consultgroup.com',
+                'password' => Hash::make('password'),
+                'role' => 'agent',
+                'email_verified_at' => now(),
+            ],
+            [
+                'name' => 'Ashique Hassan',
+                'email' => 'zihad@blubirdinteractive.com',
+                'password' => Hash::make('password'),
+                'role' => 'agent',
+                'email_verified_at' => now(),
+            ],
+            [
+                'name' => 'Richard Harless',
+                'email' => 'Richard@mybrokercloud.com',
                 'password' => Hash::make('password'),
                 'role' => 'agent',
                 'email_verified_at' => now(),

@@ -16,50 +16,6 @@ class AgentSeeder extends Seeder
     public function run(): void
     {
         $agents = [
-            // TechCorp Solutions Agents
-            [
-                'email' => 'alice@techcorp.com',
-                'company_email' => 'john@techcorp.com',
-                'agent_data' => [
-                    'commission_rate' => 15.00,
-                    'department' => 'Software Development',
-                    'hire_date' => '2024-01-15',
-                    'is_active' => true,
-                ]
-            ],
-            [
-                'email' => 'bob@techcorp.com',
-                'company_email' => 'john@techcorp.com',
-                'agent_data' => [
-                    'commission_rate' => 12.50,
-                    'department' => 'Technical Support',
-                    'hire_date' => '2024-02-01',
-                    'is_active' => true,
-                ]
-            ],
-            
-            // MarketingPro Agency Agents
-            [
-                'email' => 'carol@marketingpro.com',
-                'company_email' => 'sarah@marketingpro.com',
-                'agent_data' => [
-                    'commission_rate' => 20.00,
-                    'department' => 'Digital Marketing',
-                    'hire_date' => '2024-01-10',
-                    'is_active' => true,
-                ]
-            ],
-            [
-                'email' => 'david@marketingpro.com',
-                'company_email' => 'sarah@marketingpro.com',
-                'agent_data' => [
-                    'commission_rate' => 18.00,
-                    'department' => 'Content Creation',
-                    'hire_date' => '2024-01-20',
-                    'is_active' => true,
-                ]
-            ],
-            
             // Consultant Group LLC Agents
             [
                 'email' => 'emma@consultgroup.com',
@@ -78,6 +34,28 @@ class AgentSeeder extends Seeder
                     'commission_rate' => 22.00,
                     'department' => 'Financial Consulting',
                     'hire_date' => '2024-01-25',
+                    'is_active' => true,
+                ]
+            ],
+            
+            // My Broker Cloud Agents
+            [
+                'email' => 'zihad@blubirdinteractive.com',
+                'company_email' => 'support@mybrokercloud.com',
+                'agent_data' => [
+                    'commission_rate' => 20.00,
+                    'department' => 'Real Estate Sales',
+                    'hire_date' => '2024-02-01',
+                    'is_active' => true,
+                ]
+            ],
+            [
+                'email' => 'Richard@mybrokercloud.com',
+                'company_email' => 'support@mybrokercloud.com',
+                'agent_data' => [
+                    'commission_rate' => 18.00,
+                    'department' => 'Property Management',
+                    'hire_date' => '2024-02-15',
                     'is_active' => true,
                 ]
             ],
