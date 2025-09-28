@@ -28,6 +28,11 @@ class PaymentMethod extends Model
         'verification_initiated_at',
         'verified_at',
         'verification_metadata',
+        'verification_method',
+        'financial_connections_session_id',
+        'financial_connections_account_id',
+        'verification_method_used',
+        'financial_connections_metadata',
         'stripe_metadata',
     ];
 
@@ -38,6 +43,7 @@ class PaymentMethod extends Model
         'verification_initiated_at' => 'datetime',
         'verified_at' => 'datetime',
         'verification_metadata' => 'array',
+        'financial_connections_metadata' => 'array',
         'stripe_metadata' => 'array',
     ];
 
@@ -147,6 +153,54 @@ class PaymentMethod extends Model
         return $this->type === 'us_bank_account' 
             && $this->verification_attempts < 3 
             && !$this->isVerified();
+    }
+
+    /**
+     * Check if verification method is instant (Financial Connections)
+     */
+    public function isInstantVerification(): bool
+    {
+        return $this->verification_method === 'instant';
+    }
+
+    /**
+     * Check if verification method is microdeposits
+     */
+    public function isMicrodepositVerification(): bool
+    {
+        return $this->verification_method === 'microdeposits';
+    }
+
+    /**
+     * Check if verification method is automatic
+     */
+    public function isAutomaticVerification(): bool
+    {
+        return $this->verification_method === 'automatic';
+    }
+
+    /**
+     * Check if Financial Connections session exists
+     */
+    public function hasFinancialConnectionsSession(): bool
+    {
+        return !empty($this->financial_connections_session_id);
+    }
+
+    /**
+     * Check if Financial Connections account is linked
+     */
+    public function hasFinancialConnectionsAccount(): bool
+    {
+        return !empty($this->financial_connections_account_id);
+    }
+
+    /**
+     * Get the verification method that was actually used
+     */
+    public function getVerificationMethodUsed(): ?string
+    {
+        return $this->verification_method_used;
     }
 
     /**

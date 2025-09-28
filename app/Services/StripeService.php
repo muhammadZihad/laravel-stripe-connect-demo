@@ -16,6 +16,8 @@ use Stripe\SetupIntent;
 use Stripe\Transfer;
 use Stripe\Customer;
 use Stripe\PaymentMethod as StripePaymentMethod;
+use Stripe\FinancialConnections\Session as FinancialConnectionsSession;
+use Stripe\FinancialConnections\Account as FinancialConnectionsAccount;
 use Illuminate\Support\Facades\Log;
 
 class StripeService
@@ -581,6 +583,264 @@ class StripeService
     }
 
     /**
+     * Create Financial Connections session for instant verification
+     */
+    public function createFinancialConnectionsSession(PaymentMethod $paymentMethod): array
+    {
+        try {
+            if ($paymentMethod->type !== 'us_bank_account') {
+                return [
+                    'success' => false,
+                    'error' => 'Financial Connections is only available for US bank accounts.',
+                ];
+            }
+
+            if (!$paymentMethod->canAttemptVerification()) {
+                return [
+                    'success' => false,
+                    'error' => 'This payment method cannot be verified. Maximum attempts reached or already verified.',
+                ];
+            }
+
+            // Create Financial Connections session
+            $session = FinancialConnectionsSession::create([
+                'account_holder' => [
+                    'type' => 'customer',
+                    'customer' => $this->getOrCreateCustomer($paymentMethod->user),
+                ],
+                'permissions' => ['payment_method', 'balances'],
+                'filters' => [
+                    'countries' => ['US'],
+                ],
+                'return_url' => $this->getReturnUrl($paymentMethod),
+            ]);
+
+            // Update payment method with session info
+            $paymentMethod->update([
+                'verification_status' => 'pending_verification',
+                'verification_attempts' => $paymentMethod->verification_attempts + 1,
+                'verification_method' => 'instant',
+                'financial_connections_session_id' => $session->id,
+                'verification_initiated_at' => now(),
+                'financial_connections_metadata' => [
+                    'session_id' => $session->id,
+                    'status' => $session->livemode ? 'live' : 'test',
+                    'created_at' => now()->toISOString(),
+                ],
+            ]);
+
+            return [
+                'success' => true,
+                'session' => $session,
+                'client_secret' => $session->client_secret,
+                'verification_initiated' => true,
+                'message' => 'Financial Connections session created. Please complete bank account linking.',
+            ];
+        } catch (\Exception $e) {
+            Log::error('Financial Connections session creation failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Failed to create verification session: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Complete Financial Connections verification
+     */
+    public function completeFinancialConnectionsVerification(PaymentMethod $paymentMethod): array
+    {
+        try {
+            if (!$paymentMethod->hasFinancialConnectionsSession()) {
+                return [
+                    'success' => false,
+                    'error' => 'No Financial Connections session found for this payment method.',
+                ];
+            }
+
+            // Retrieve the session
+            $session = FinancialConnectionsSession::retrieve($paymentMethod->financial_connections_session_id);
+            
+            if (empty($session->accounts->data)) {
+                return [
+                    'success' => false,
+                    'error' => 'No accounts were linked during the verification process.',
+                ];
+            }
+
+            // Get the first linked account
+            $account = $session->accounts->data[0];
+            
+            // Create payment method from the linked account
+            $user = $paymentMethod->user;
+            
+            Log::info('Creating payment method from Financial Connections account', [
+                'account_id' => $account->id,
+                'user_id' => $user->id,
+                'user_name' => $user->name,
+                'user_email' => $user->email,
+            ]);
+            
+            $stripePaymentMethod = StripePaymentMethod::create([
+                'type' => 'us_bank_account',
+                'us_bank_account' => [
+                    'financial_connections_account' => $account->id,
+                ],
+                'billing_details' => [
+                    'name' => $user->name ?: 'Unknown',
+                    'email' => $user->email,
+                ],
+            ]);
+
+            // Attach to customer
+            $customerId = $this->getOrCreateCustomer($paymentMethod->user);
+            $stripePaymentMethod->attach(['customer' => $customerId]);
+
+            // Update payment method as verified
+            $paymentMethod->update([
+                'stripe_payment_method_id' => $stripePaymentMethod->id,
+                'verification_status' => 'verified',
+                'verification_method_used' => 'instant',
+                'verified_at' => now(),
+                'is_active' => true,
+                'financial_connections_account_id' => $account->id,
+                'bank_name' => $account->institution_name ?? 'Unknown Bank',
+                'last_four' => $stripePaymentMethod->us_bank_account->last4,
+                'account_holder_type' => $stripePaymentMethod->us_bank_account->account_holder_type,
+                'financial_connections_metadata' => array_merge(
+                    $paymentMethod->financial_connections_metadata ?? [],
+                    [
+                        'account_id' => $account->id,
+                        'institution_name' => $account->institution_name,
+                        'verified_at' => now()->toISOString(),
+                        'account_type' => $account->subcategory,
+                    ]
+                ),
+            ]);
+
+            Log::info('Financial Connections verification completed successfully', [
+                'payment_method_id' => $paymentMethod->id,
+                'stripe_payment_method_id' => $stripePaymentMethod->id,
+                'financial_connections_account_id' => $account->id,
+                'user_id' => $paymentMethod->user->id,
+            ]);
+
+            return [
+                'success' => true,
+                'verified' => true,
+                'message' => 'Bank account verified successfully via Financial Connections!',
+                'account' => $account,
+            ];
+        } catch (\Exception $e) {
+            // Update verification status to failed
+            $paymentMethod->update([
+                'verification_status' => 'failed',
+                'financial_connections_metadata' => array_merge(
+                    $paymentMethod->financial_connections_metadata ?? [],
+                    [
+                        'error' => $e->getMessage(),
+                        'failed_at' => now()->toISOString(),
+                    ]
+                ),
+            ]);
+
+            Log::error('Financial Connections verification failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Verification failed: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Check Financial Connections session status
+     */
+    public function checkFinancialConnectionsSessionStatus(PaymentMethod $paymentMethod): array
+    {
+        try {
+            if (!$paymentMethod->hasFinancialConnectionsSession()) {
+                return [
+                    'success' => false,
+                    'error' => 'No Financial Connections session found for this payment method.',
+                ];
+            }
+
+            // Retrieve the session
+            $session = FinancialConnectionsSession::retrieve($paymentMethod->financial_connections_session_id);
+            
+            return [
+                'success' => true,
+                'session' => $session,
+                'status' => $session->status,
+                'accounts_count' => count($session->accounts->data ?? []),
+                'is_complete' => !empty($session->accounts->data),
+            ];
+        } catch (\Exception $e) {
+            Log::error('Financial Connections session status check failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Failed to check session status: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Initiate bank account verification with automatic method selection
+     */
+    public function initiateVerification(PaymentMethod $paymentMethod, string $preferredMethod = 'automatic'): array
+    {
+        try {
+            if ($paymentMethod->type !== 'us_bank_account') {
+                return [
+                    'success' => false,
+                    'error' => 'Only US bank accounts require verification.',
+                ];
+            }
+
+            if (!$paymentMethod->canAttemptVerification()) {
+                return [
+                    'success' => false,
+                    'error' => 'This payment method cannot be verified. Maximum attempts reached or already verified.',
+                ];
+            }
+
+            // Determine verification method
+            $verificationMethod = $this->determineVerificationMethod($preferredMethod);
+            
+            if ($verificationMethod === 'instant') {
+                return $this->createFinancialConnectionsSession($paymentMethod);
+            } else {
+                return $this->initiateMicroDepositVerification($paymentMethod);
+            }
+        } catch (\Exception $e) {
+            Log::error('Verification initiation failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Failed to initiate verification: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Determine the best verification method to use
+     */
+    private function determineVerificationMethod(string $preferredMethod): string
+    {
+        // For now, we'll prioritize Financial Connections if available
+        // In the future, you could add logic to check if Financial Connections is enabled
+        // in your Stripe account or based on other business rules
+        
+        if ($preferredMethod === 'instant') {
+            return 'instant';
+        } elseif ($preferredMethod === 'microdeposits') {
+            return 'microdeposits';
+        } else {
+            // Automatic selection - prefer instant verification
+            return 'instant';
+        }
+    }
+
+    /**
      * Delete payment method
      */
     public function deletePaymentMethod(PaymentMethod $paymentMethod): array
@@ -603,6 +863,34 @@ class StripeService
                 'success' => false,
                 'error' => $e->getMessage(),
             ];
+        }
+    }
+
+    /**
+     * Get the appropriate return URL for Financial Connections
+     */
+    private function getReturnUrl(PaymentMethod $paymentMethod): string
+    {
+        $baseUrl = config('app.url');
+        
+        // For local development, we need HTTPS for Financial Connections
+        // You can either:
+        // 1. Use ngrok or similar service to get HTTPS locally
+        // 2. Set up local HTTPS with Laravel Valet/Herd
+        // 3. For testing, use a placeholder that won't redirect but satisfies Stripe
+        
+        if (str_contains($baseUrl, 'localhost') || str_contains($baseUrl, '127.0.0.1')) {
+            // For local development, we'll handle completion manually via polling
+            // This is a valid HTTPS URL that satisfies Stripe's requirements
+            $baseUrl = 'https://your-app.test'; // Change this to your local HTTPS domain
+        }
+        
+        // Determine the correct route based on user type
+        $user = $paymentMethod->user;
+        if ($user->isAgent()) {
+            return $baseUrl . '/agent/payment-methods/verify-complete/' . $paymentMethod->id;
+        } else {
+            return $baseUrl . '/company/payment-methods/verify-complete/' . $paymentMethod->id;
         }
     }
 
@@ -649,6 +937,15 @@ class StripeService
                 case 'account.updated':
                     $this->handleAccountUpdated($event['data']['object']);
                     break;
+                case 'financial_connections.account.created':
+                    $this->handleFinancialConnectionsAccountCreated($event['data']['object']);
+                    break;
+                case 'financial_connections.account.disconnected':
+                    $this->handleFinancialConnectionsAccountDisconnected($event['data']['object']);
+                    break;
+                case 'financial_connections.session.completed':
+                    $this->handleFinancialConnectionsSessionCompleted($event['data']['object']);
+                    break;
                 // Add more webhook handlers as needed
             }
 
@@ -687,6 +984,78 @@ class StripeService
                 'stripe_onboarding_complete' => $account['details_submitted'] && 
                                                 $account['charges_enabled'] && 
                                                 $account['payouts_enabled'],
+            ]);
+        }
+    }
+
+    private function handleFinancialConnectionsAccountCreated(array $account): void
+    {
+        Log::info('Financial Connections account created', [
+            'account_id' => $account['id'],
+            'institution_name' => $account['institution_name'] ?? 'Unknown',
+        ]);
+        
+        // Note: The account creation is handled in the completeFinancialConnectionsVerification method
+        // This webhook is mainly for logging and monitoring purposes
+    }
+
+    private function handleFinancialConnectionsAccountDisconnected(array $account): void
+    {
+        Log::info('Financial Connections account disconnected', [
+            'account_id' => $account['id'],
+        ]);
+        
+        // Find and update payment method if it exists
+        $paymentMethod = PaymentMethod::where('financial_connections_account_id', $account['id'])->first();
+        
+        if ($paymentMethod) {
+            $paymentMethod->update([
+                'is_active' => false,
+                'verification_status' => 'failed',
+                'financial_connections_metadata' => array_merge(
+                    $paymentMethod->financial_connections_metadata ?? [],
+                    [
+                        'disconnected_at' => now()->toISOString(),
+                        'reason' => 'Account disconnected via webhook',
+                    ]
+                ),
+            ]);
+            
+            Log::warning('Payment method deactivated due to Financial Connections account disconnection', [
+                'payment_method_id' => $paymentMethod->id,
+                'user_id' => $paymentMethod->user_id,
+                'financial_connections_account_id' => $account['id'],
+            ]);
+        }
+    }
+
+    private function handleFinancialConnectionsSessionCompleted(array $session): void
+    {
+        Log::info('Financial Connections session completed', [
+            'session_id' => $session['id'],
+            'accounts_count' => count($session['accounts']['data'] ?? []),
+        ]);
+        
+        // Find payment method by session ID
+        $paymentMethod = PaymentMethod::where('financial_connections_session_id', $session['id'])->first();
+        
+        if ($paymentMethod && empty($session['accounts']['data'])) {
+            // Session completed but no accounts were linked
+            $paymentMethod->update([
+                'verification_status' => 'failed',
+                'financial_connections_metadata' => array_merge(
+                    $paymentMethod->financial_connections_metadata ?? [],
+                    [
+                        'session_completed_at' => now()->toISOString(),
+                        'error' => 'No accounts linked during session',
+                    ]
+                ),
+            ]);
+            
+            Log::warning('Financial Connections session completed without linking accounts', [
+                'payment_method_id' => $paymentMethod->id,
+                'user_id' => $paymentMethod->user_id,
+                'session_id' => $session['id'],
             ]);
         }
     }

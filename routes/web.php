@@ -158,6 +158,8 @@ Route::middleware(['auth', 'company'])->prefix('company')->name('company.')->gro
     Route::post('/payment-methods/{paymentMethod}/initiate-verification', [CompanyController::class, 'initiateVerification'])->name('payment-methods.initiate-verification');
     Route::get('/payment-methods/{paymentMethod}/verify', [CompanyController::class, 'showVerifyForm'])->name('payment-methods.verify');
     Route::post('/payment-methods/{paymentMethod}/verify', [CompanyController::class, 'verifyMicroDeposits'])->name('payment-methods.verify.submit');
+    Route::get('/payment-methods/verify-complete/{paymentMethod}', [CompanyController::class, 'completeFinancialConnectionsVerification'])->name('payment-methods.verify-complete');
+    Route::get('/payment-methods/{paymentMethod}/check-status', [CompanyController::class, 'checkFinancialConnectionsStatus'])->name('payment-methods.check-status');
     
     // Profile & Settings
     Route::get('/profile', [CompanyController::class, 'profile'])->name('profile');
@@ -195,6 +197,8 @@ Route::middleware(['auth', 'agent'])->prefix('agent')->name('agent.')->group(fun
     Route::post('/payment-methods/{paymentMethod}/initiate-verification', [AgentController::class, 'initiateVerification'])->name('payment-methods.initiate-verification');
     Route::get('/payment-methods/{paymentMethod}/verify', [AgentController::class, 'showVerifyForm'])->name('payment-methods.verify');
     Route::post('/payment-methods/{paymentMethod}/verify', [AgentController::class, 'verifyMicroDeposits'])->name('payment-methods.verify.submit');
+    Route::get('/payment-methods/verify-complete/{paymentMethod}', [AgentController::class, 'completeFinancialConnectionsVerification'])->name('payment-methods.verify-complete');
+    Route::get('/payment-methods/{paymentMethod}/check-status', [AgentController::class, 'checkFinancialConnectionsStatus'])->name('payment-methods.check-status');
     
     // Profile & Settings
     Route::get('/profile', [AgentController::class, 'profile'])->name('profile');

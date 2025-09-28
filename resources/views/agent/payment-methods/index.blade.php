@@ -267,41 +267,8 @@
 
 <script>
 async function initiateVerification(paymentMethodId) {
-    const button = event.target;
-    const originalText = button.textContent;
-    
-    // Show loading state
-    button.textContent = 'Initiating...';
-    button.disabled = true;
-    
-    try {
-        const response = await fetch(`/agent/payment-methods/${paymentMethodId}/initiate-verification`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
-            },
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            alert('✅ Verification Initiated!\n\n' + data.message + '\n\n' + data.estimated_arrival);
-            // Reload the page to show updated status
-            window.location.reload();
-        } else {
-            alert('❌ Error: ' + (data.error || 'Failed to initiate verification'));
-            // Reset button
-            button.textContent = originalText;
-            button.disabled = false;
-        }
-    } catch (error) {
-        console.error('Verification initiation error:', error);
-        alert('❌ An unexpected error occurred. Please try again.');
-        // Reset button
-        button.textContent = originalText;
-        button.disabled = false;
-    }
+    // Redirect to verification page instead of initiating directly
+    window.location.href = `/agent/payment-methods/${paymentMethodId}/verify`;
 }
 </script>
 @endsection 

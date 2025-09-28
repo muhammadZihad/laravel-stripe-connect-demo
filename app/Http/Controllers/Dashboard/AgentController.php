@@ -192,9 +192,9 @@ class AgentController extends Controller
     }
 
     /**
-     * Initiate micro-deposit verification
+     * Initiate micro-deposit verification (legacy method - deprecated)
      */
-    public function initiateVerification(Request $request, PaymentMethod $paymentMethod)
+    public function initiateMicroDepositVerification(Request $request, PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
         
@@ -234,12 +234,128 @@ class AgentController extends Controller
         }
 
         // Check if verification is available
-        if (!$paymentMethod->isPendingVerification()) {
+        if ($paymentMethod->isVerified()) {
             return redirect()->route('agent.payment-methods')
-                ->with('error', 'This payment method is not available for verification.');
+                ->with('success', 'This payment method is already verified.');
+        }
+
+        // Only allow verification for US bank accounts
+        if ($paymentMethod->type !== 'us_bank_account') {
+            return redirect()->route('agent.payment-methods')
+                ->with('error', 'Only US bank accounts require verification.');
+        }
+
+        // Check if verification attempts are exhausted
+        if (!$paymentMethod->canAttemptVerification()) {
+            return redirect()->route('agent.payment-methods')
+                ->with('error', 'Maximum verification attempts reached for this payment method.');
         }
 
         return view('agent.payment-methods.verify', compact('paymentMethod'));
+    }
+
+    /**
+     * Initiate verification with method selection
+     */
+    public function initiateVerification(Request $request, PaymentMethod $paymentMethod)
+    {
+        $user = Auth::user();
+        
+        // Ensure this payment method belongs to the current user
+        if ($paymentMethod->user_id !== $user->id) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Unauthorized access to payment method.',
+            ], 403);
+        }
+
+        $request->validate([
+            'verification_method' => 'required|in:instant,microdeposits,automatic',
+        ]);
+
+        $result = $this->stripeService->initiateVerification($paymentMethod, $request->verification_method);
+
+        if ($result['success']) {
+            $response = [
+                'success' => true,
+                'message' => $result['message'],
+            ];
+
+            // If it's Financial Connections, return the client secret
+            if (isset($result['client_secret'])) {
+                $response['client_secret'] = $result['client_secret'];
+                $response['verification_method'] = 'instant';
+            } else {
+                $response['redirect'] = route('agent.payment-methods');
+            }
+
+            return response()->json($response);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
+    /**
+     * Check Financial Connections session status (for polling in local development)
+     */
+    public function checkFinancialConnectionsStatus(PaymentMethod $paymentMethod)
+    {
+        $user = Auth::user();
+        
+        // Ensure this payment method belongs to the current user
+        if ($paymentMethod->user_id !== $user->id) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Unauthorized access to payment method.',
+            ], 403);
+        }
+
+        $result = $this->stripeService->checkFinancialConnectionsSessionStatus($paymentMethod);
+
+        if ($result['success'] && $result['is_complete']) {
+            // Session is complete, try to complete verification
+            $completionResult = $this->stripeService->completeFinancialConnectionsVerification($paymentMethod);
+            return response()->json([
+                'success' => $completionResult['success'],
+                'complete' => true,
+                'message' => $completionResult['success'] ? $completionResult['message'] : $completionResult['error'],
+                'redirect' => route('agent.payment-methods'),
+            ]);
+        }
+
+        return response()->json([
+            'success' => $result['success'],
+            'complete' => false,
+            'status' => $result['status'] ?? 'unknown',
+            'message' => $result['error'] ?? 'Session not yet complete',
+        ]);
+    }
+
+    /**
+     * Complete Financial Connections verification
+     */
+    public function completeFinancialConnectionsVerification(PaymentMethod $paymentMethod)
+    {
+        $user = Auth::user();
+        
+        // Ensure this payment method belongs to the current user
+        if ($paymentMethod->user_id !== $user->id) {
+            return redirect()->route('agent.payment-methods')
+                ->with('error', 'Unauthorized access to payment method.');
+        }
+
+        $result = $this->stripeService->completeFinancialConnectionsVerification($paymentMethod);
+
+        if ($result['success']) {
+            return redirect()->route('agent.payment-methods')
+                ->with('success', $result['message']);
+        }
+
+        return redirect()->route('agent.payment-methods')
+            ->with('error', $result['error']);
     }
 
     /**
