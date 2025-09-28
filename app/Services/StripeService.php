@@ -296,6 +296,184 @@ class StripeService
     }
 
     /**
+     * Create Financial Connections session for adding new bank account
+     */
+    public function createFinancialConnectionsSessionForAddition(User $user): array
+    {
+        try {
+            // Create Financial Connections session for adding new bank account
+            $session = FinancialConnectionsSession::create([
+                'account_holder' => [
+                    'type' => 'customer',
+                    'customer' => $this->getOrCreateCustomer($user),
+                ],
+                'permissions' => ['payment_method', 'balances'],
+                'filters' => [
+                    'countries' => ['US'],
+                ],
+                'return_url' => $this->getReturnUrlForAddition($user),
+            ]);
+
+            Log::info('Financial Connections session created for bank account addition', [
+                'session_id' => $session->id,
+                'user_id' => $user->id,
+            ]);
+
+            return [
+                'success' => true,
+                'session' => $session,
+                'client_secret' => $session->client_secret,
+                'message' => 'Financial Connections session created. Please connect your bank account.',
+            ];
+        } catch (\Exception $e) {
+            Log::error('Financial Connections session creation failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Failed to create bank connection session: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Complete Financial Connections bank account addition
+     */
+    public function completeFinancialConnectionsBankAddition(User $user, string $sessionId): array
+    {
+        try {
+            // Retrieve the session
+            $session = FinancialConnectionsSession::retrieve($sessionId);
+            
+            Log::info('Financial Connections session retrieved for addition', [
+                'session_id' => $sessionId,
+                'user_id' => $user->id,
+                'accounts_count' => count($session->accounts->data ?? []),
+                'session_status' => $session->status ?? 'unknown',
+            ]);
+            
+            if (empty($session->accounts->data)) {
+                Log::warning('No accounts linked in Financial Connections session', [
+                    'session_id' => $sessionId,
+                    'user_id' => $user->id,
+                ]);
+                
+                return [
+                    'success' => false,
+                    'error' => 'No accounts were linked during the connection process.',
+                ];
+            }
+
+            $addedPaymentMethods = [];
+
+            // Process each linked account
+            foreach ($session->accounts->data as $account) {
+                Log::info('Processing Financial Connections account for addition', [
+                    'account_id' => $account->id,
+                    'user_id' => $user->id,
+                    'institution_name' => $account->institution_name,
+                ]);
+                
+                // Create payment method from the linked account
+                $stripePaymentMethod = StripePaymentMethod::create([
+                    'type' => 'us_bank_account',
+                    'us_bank_account' => [
+                        'financial_connections_account' => $account->id,
+                    ],
+                    'billing_details' => [
+                        'name' => $user->name ?: 'Unknown',
+                        'email' => $user->email,
+                    ],
+                ]);
+
+                // Attach to customer
+                $customerId = $this->getOrCreateCustomer($user);
+                $stripePaymentMethod->attach(['customer' => $customerId]);
+
+                // Set as default if it's the first payment method
+                $isFirstPaymentMethod = $user->paymentMethods()->count() === 0;
+
+                // If setting as default, unset other defaults
+                if ($isFirstPaymentMethod) {
+                    $user->paymentMethods()->update(['is_default' => false]);
+                }
+
+                // Store in database as already verified
+                $paymentMethod = $user->paymentMethods()->create([
+                    'stripe_payment_method_id' => $stripePaymentMethod->id,
+                    'type' => 'us_bank_account',
+                    'brand' => null,
+                    'last_four' => $stripePaymentMethod->us_bank_account->last4,
+                    'exp_month' => null,
+                    'exp_year' => null,
+                    'bank_name' => $account->institution_name ?? 'Unknown Bank',
+                    'account_holder_type' => $stripePaymentMethod->us_bank_account->account_holder_type,
+                    'is_default' => $isFirstPaymentMethod,
+                    'is_active' => true,
+                    'verification_status' => 'verified', // Already verified via Financial Connections
+                    'verification_method' => 'instant',
+                    'verification_method_used' => 'instant',
+                    'verified_at' => now(),
+                    'verification_attempts' => 1,
+                    'financial_connections_session_id' => $sessionId,
+                    'financial_connections_account_id' => $account->id,
+                    'financial_connections_metadata' => [
+                        'session_id' => $sessionId,
+                        'account_id' => $account->id,
+                        'institution_name' => $account->institution_name,
+                        'added_at' => now()->toISOString(),
+                        'account_type' => $account->subcategory,
+                        'balance' => $account->balance ?? null,
+                    ],
+                    'stripe_metadata' => $stripePaymentMethod->metadata->toArray(),
+                ]);
+
+                $addedPaymentMethods[] = $paymentMethod;
+
+                Log::info('Bank account added successfully via Financial Connections', [
+                    'payment_method_id' => $paymentMethod->id,
+                    'stripe_payment_method_id' => $stripePaymentMethod->id,
+                    'financial_connections_account_id' => $account->id,
+                    'user_id' => $user->id,
+                    'institution_name' => $account->institution_name,
+                ]);
+            }
+
+            return [
+                'success' => true,
+                'payment_methods' => $addedPaymentMethods,
+                'count' => count($addedPaymentMethods),
+                'message' => count($addedPaymentMethods) === 1 
+                    ? 'Bank account added and verified successfully!' 
+                    : count($addedPaymentMethods) . ' bank accounts added and verified successfully!',
+            ];
+        } catch (\Exception $e) {
+            Log::error('Financial Connections bank addition failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Failed to add bank account: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Get return URL for Financial Connections bank addition
+     */
+    private function getReturnUrlForAddition(User $user): string
+    {
+        $baseUrl = config('app.url');
+        
+        // Handle local development HTTPS requirement
+        if (str_contains($baseUrl, 'localhost') || str_contains($baseUrl, '127.0.0.1')) {
+            $baseUrl = 'https://your-app.test'; // Change to your local HTTPS domain
+        }
+        
+        if ($user->isAgent()) {
+            return $baseUrl . '/agent/payment-methods/add-complete';
+        } else {
+            return $baseUrl . '/company/payment-methods/add-complete';
+        }
+    }
+
+    /**
      * Attach existing payment method to user
      */
     public function attachPaymentMethod(User $user, string $paymentMethodId, bool $isDefault = false): array

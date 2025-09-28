@@ -154,6 +154,11 @@ Route::middleware(['auth', 'company'])->prefix('company')->name('company.')->gro
     Route::post('/payment-methods/{paymentMethod}/set-default', [CompanyController::class, 'setDefaultPaymentMethod'])->name('payment-methods.set-default');
     Route::delete('/payment-methods/{paymentMethod}', [CompanyController::class, 'deletePaymentMethod'])->name('payment-methods.delete');
     
+    // Financial Connections for adding bank accounts
+    Route::post('/payment-methods/create-fc-session', [CompanyController::class, 'createFinancialConnectionsSession'])->name('payment-methods.create-fc-session');
+    Route::post('/payment-methods/check-addition-status', [CompanyController::class, 'checkFinancialConnectionsAdditionStatus'])->name('payment-methods.check-addition-status');
+    Route::get('/payment-methods/add-complete', [CompanyController::class, 'completeFinancialConnectionsAddition'])->name('payment-methods.add-complete');
+    
     // Payment Method Verification
     Route::post('/payment-methods/{paymentMethod}/initiate-verification', [CompanyController::class, 'initiateVerification'])->name('payment-methods.initiate-verification');
     Route::get('/payment-methods/{paymentMethod}/verify', [CompanyController::class, 'showVerifyForm'])->name('payment-methods.verify');
@@ -192,6 +197,11 @@ Route::middleware(['auth', 'agent'])->prefix('agent')->name('agent.')->group(fun
     Route::post('/payment-methods', [AgentController::class, 'storePaymentMethod'])->name('payment-methods.store');
     Route::post('/payment-methods/{paymentMethod}/set-default', [AgentController::class, 'setDefaultPaymentMethod'])->name('payment-methods.set-default');
     Route::delete('/payment-methods/{paymentMethod}', [AgentController::class, 'deletePaymentMethod'])->name('payment-methods.delete');
+    
+    // Financial Connections for adding bank accounts
+    Route::post('/payment-methods/create-fc-session', [AgentController::class, 'createFinancialConnectionsSession'])->name('payment-methods.create-fc-session');
+    Route::post('/payment-methods/check-addition-status', [AgentController::class, 'checkFinancialConnectionsAdditionStatus'])->name('payment-methods.check-addition-status');
+    Route::get('/payment-methods/add-complete', [AgentController::class, 'completeFinancialConnectionsAddition'])->name('payment-methods.add-complete');
     
     // Payment Method Verification
     Route::post('/payment-methods/{paymentMethod}/initiate-verification', [AgentController::class, 'initiateVerification'])->name('payment-methods.initiate-verification');

@@ -84,9 +84,32 @@
                     <!-- Payment Method Type -->
                     <div class="mb-6">
                         <label class="block text-sm font-medium text-gray-700 mb-3">Payment Method Type</label>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="space-y-4">
+                            <!-- Financial Connections Bank Account (Recommended) -->
                             <label class="relative">
-                                <input type="radio" name="type" value="card" class="sr-only peer" checked>
+                                <input type="radio" name="type" value="financial_connections" class="sr-only peer" checked>
+                                <div class="flex items-center p-4 border-2 border-green-200 bg-green-50 rounded-lg cursor-pointer peer-checked:border-green-500 peer-checked:bg-green-100">
+                                    <div class="flex items-center justify-center w-10 h-10 bg-green-100 rounded-lg mr-3">
+                                        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                                        </svg>
+                                    </div>
+                                    <div class="flex-1">
+                                        <div class="flex items-center">
+                                            <div class="text-sm font-medium text-gray-900">🏦 Connect with Your Bank</div>
+                                            <span class="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                                Recommended
+                                            </span>
+                                        </div>
+                                        <div class="text-sm text-gray-600 mt-1">Connect securely via online banking - instant verification</div>
+                                        <div class="text-xs text-green-600 mt-1">✓ Instant • No manual entry • Secure</div>
+                                    </div>
+                                </div>
+                            </label>
+
+                            <!-- Credit/Debit Card -->
+                            <label class="relative">
+                                <input type="radio" name="type" value="card" class="sr-only peer">
                                 <div class="flex items-center p-4 border-2 border-gray-200 rounded-lg cursor-pointer peer-checked:border-primary-500 peer-checked:bg-primary-50">
                                     <div class="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-lg mr-3">
                                         <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -94,31 +117,58 @@
                                         </svg>
                                     </div>
                                     <div>
-                                        <div class="text-sm font-medium text-gray-900">Credit/Debit Card</div>
+                                        <div class="text-sm font-medium text-gray-900">💳 Credit/Debit Card</div>
                                         <div class="text-sm text-gray-500">Visa, Mastercard, AMEX</div>
                                     </div>
                                 </div>
                             </label>
 
+                            <!-- Manual Bank Account Entry -->
                             <label class="relative">
                                 <input type="radio" name="type" value="us_bank_account" class="sr-only peer">
                                 <div class="flex items-center p-4 border-2 border-gray-200 rounded-lg cursor-pointer peer-checked:border-primary-500 peer-checked:bg-primary-50">
-                                    <div class="flex items-center justify-center w-10 h-10 bg-green-100 rounded-lg mr-3">
-                                        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                                    <div class="flex items-center justify-center w-10 h-10 bg-yellow-100 rounded-lg mr-3">
+                                        <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                         </svg>
                                     </div>
-                                    <div>
-                                        <div class="text-sm font-medium text-gray-900">Bank Account</div>
-                                        <div class="text-sm text-gray-500">ACH transfers</div>
+                                    <div class="flex-1">
+                                        <div class="text-sm font-medium text-gray-900">📝 Add Bank Account Manually</div>
+                                        <div class="text-sm text-gray-500">Enter routing & account numbers</div>
+                                        <div class="text-xs text-yellow-600 mt-1">⚠️ Requires verification (1-2 business days)</div>
                                     </div>
                                 </div>
                             </label>
                         </div>
                     </div>
 
+                    <!-- Financial Connections Section -->
+                    <div id="financial-connections-section" class="space-y-4">
+                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <div class="flex">
+                                <div class="flex-shrink-0">
+                                    <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/>
+                                    </svg>
+                                </div>
+                                <div class="ml-3">
+                                    <h3 class="text-sm font-medium text-blue-800">Secure Bank Connection</h3>
+                                    <div class="mt-1 text-sm text-blue-700">
+                                        <p>Connect your bank account securely through your online banking. No need to enter sensitive account details manually.</p>
+                                        <ul class="mt-2 list-disc list-inside space-y-1">
+                                            <li>Bank-grade security</li>
+                                            <li>Instant verification</li>
+                                            <li>No waiting period</li>
+                                            <li>Powered by Stripe</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Card Payment Section -->
-                    <div id="card-section" class="space-y-4">
+                    <div id="card-section" class="space-y-4" style="display: none;">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Card Information</label>
                             <div id="card-element" class="p-3 border border-gray-300 rounded-md bg-white">
@@ -246,21 +296,32 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Handle payment method type switching
     const typeRadios = document.querySelectorAll('input[name="type"]');
+    const financialConnectionsSection = document.getElementById('financial-connections-section');
     const cardSection = document.getElementById('card-section');
     const bankSection = document.getElementById('bank-section');
     const submitButton = document.getElementById('submit-button');
     
     function togglePaymentMethodFields() {
         const selectedType = document.querySelector('input[name="type"]:checked')?.value;
+        const buttonText = document.getElementById('button-text');
         
-        if (selectedType === 'card') {
-            cardSection.style.display = 'block';
-            bankSection.style.display = 'none';
+        // Hide all sections first
+        financialConnectionsSection.style.display = 'none';
+        cardSection.style.display = 'none';
+        bankSection.style.display = 'none';
+        
+        if (selectedType === 'financial_connections') {
+            financialConnectionsSection.style.display = 'block';
             submitButton.disabled = false;
+            if (buttonText) buttonText.textContent = 'Connect with Bank';
+        } else if (selectedType === 'card') {
+            cardSection.style.display = 'block';
+            submitButton.disabled = false;
+            if (buttonText) buttonText.textContent = 'Add Credit Card';
         } else if (selectedType === 'us_bank_account') {
-            cardSection.style.display = 'none';
             bankSection.style.display = 'block';
             submitButton.disabled = false;
+            if (buttonText) buttonText.textContent = 'Add Bank Account';
         }
     }
     
@@ -348,8 +409,8 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Disable submit button and show loading
         submitButton.disabled = true;
-        buttonText.classList.add('hidden');
-        spinner.classList.remove('hidden');
+        if (buttonText) buttonText.classList.add('hidden');
+        if (spinner) spinner.classList.remove('hidden');
         
         const selectedType = document.querySelector('input[name="type"]:checked')?.value;
         const isDefault = document.getElementById('is_default').checked;
@@ -368,7 +429,11 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             let result;
             
-            if (selectedType === 'card') {
+            if (selectedType === 'financial_connections') {
+                // Handle Financial Connections
+                await handleFinancialConnections();
+                return;
+            } else if (selectedType === 'card') {
                 // Create payment method with card
                 result = await stripe.createPaymentMethod({
                     type: 'card',
@@ -491,6 +556,131 @@ document.addEventListener('DOMContentLoaded', function() {
             spinner.classList.add('hidden');
         }
     });
+
+    // Handle Financial Connections
+    async function handleFinancialConnections() {
+        const submitButton = document.getElementById('submit-button');
+        const buttonText = document.getElementById('button-text');
+        const spinner = document.getElementById('spinner');
+        
+        try {
+            // Update button text
+            if (buttonText) buttonText.textContent = 'Connecting to your bank...';
+            
+            // Create Financial Connections session
+            const response = await fetch('{{ route('agent.payment-methods.create-fc-session') }}', {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                if (buttonText) buttonText.textContent = 'Opening bank connection...';
+                
+                // Handle environment-specific flow
+                const isLocalDevelopment = window.location.protocol === 'http:' && 
+                                          (window.location.hostname === 'localhost' || 
+                                           window.location.hostname === '127.0.0.1');
+                
+                if (isLocalDevelopment) {
+                    // Local development with polling
+                    const { error } = await stripe.collectFinancialConnectionsAccounts({
+                        clientSecret: data.client_secret
+                    });
+
+                    if (error) {
+                        throw new Error(error.message);
+                    }
+
+                    // Start polling for completion
+                    if (buttonText) buttonText.textContent = 'Adding your bank account...';
+                    await pollForAdditionCompletion(data.session_id);
+                } else {
+                    // Production with return URL
+                    const { error } = await stripe.collectFinancialConnectionsAccounts({
+                        clientSecret: data.client_secret,
+                        returnUrl: window.location.origin + '/agent/payment-methods/add-complete?session_id=' + data.session_id
+                    });
+
+                    if (error) {
+                        throw new Error(error.message);
+                    }
+                    // User will be redirected to return URL
+                }
+            } else {
+                throw new Error(data.error);
+            }
+        } catch (error) {
+            console.error('Financial Connections error:', error);
+            alert(`❌ Error: ${error.message}\n\nYou can try adding your bank account manually instead.`);
+            
+            // Reset button
+            submitButton.disabled = false;
+            if (buttonText) {
+                buttonText.classList.remove('hidden');
+                buttonText.textContent = 'Connect with Bank';
+            }
+            if (spinner) spinner.classList.add('hidden');
+        }
+    }
+
+    // Polling function for local development
+    async function pollForAdditionCompletion(sessionId) {
+        const maxAttempts = 30; // 5 minutes
+        let attempts = 0;
+
+        const poll = async () => {
+            attempts++;
+            
+            try {
+                const response = await fetch('{{ route('agent.payment-methods.check-addition-status') }}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.complete) {
+                    const message = data.count > 1 
+                        ? `✅ ${data.count} bank accounts added successfully!`
+                        : '✅ Bank account added successfully!';
+                    alert(message);
+                    window.location.href = data.redirect || '{{ route('agent.payment-methods') }}';
+                    return;
+                }
+
+                if (attempts >= maxAttempts) {
+                    alert('⏱️ Connection is taking longer than expected. Please check your payment methods page.');
+                    window.location.href = '{{ route('agent.payment-methods') }}';
+                    return;
+                }
+
+                setTimeout(poll, 5000); // Poll every 5 seconds
+            } catch (error) {
+                console.error('Polling error:', error);
+                if (attempts >= maxAttempts) {
+                    alert('❌ Unable to check connection status. Please check your payment methods page.');
+                    window.location.href = '{{ route('agent.payment-methods') }}';
+                } else {
+                    setTimeout(poll, 5000);
+                }
+            }
+        };
+
+        setTimeout(poll, 3000); // Wait 3 seconds before first poll
+    }
 });
 </script>
 @endsection 

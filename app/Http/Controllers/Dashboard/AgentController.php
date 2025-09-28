@@ -135,6 +135,78 @@ class AgentController extends Controller
         return view('agent.payment-methods.create');
     }
 
+    /**
+     * Create Financial Connections session for adding bank account
+     */
+    public function createFinancialConnectionsSession(Request $request)
+    {
+        $user = Auth::user();
+        
+        $result = $this->stripeService->createFinancialConnectionsSessionForAddition($user);
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'client_secret' => $result['client_secret'],
+                'session_id' => $result['session']->id, // Include session ID for polling
+                'message' => $result['message'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
+    /**
+     * Check Financial Connections session status for addition
+     */
+    public function checkFinancialConnectionsAdditionStatus(Request $request)
+    {
+        $user = Auth::user();
+        
+        $request->validate([
+            'session_id' => 'required|string',
+        ]);
+
+        $result = $this->stripeService->completeFinancialConnectionsBankAddition($user, $request->session_id);
+
+        return response()->json([
+            'success' => $result['success'],
+            'complete' => $result['success'],
+            'message' => $result['success'] ? $result['message'] : $result['error'],
+            'count' => $result['count'] ?? 0,
+            'redirect' => route('agent.payment-methods'),
+        ]);
+    }
+
+    /**
+     * Complete Financial Connections bank account addition
+     */
+    public function completeFinancialConnectionsAddition(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Get session_id from query parameter for return URL
+        $sessionId = $request->query('session_id') ?? $request->input('session_id');
+        
+        if (!$sessionId) {
+            return redirect()->route('agent.payment-methods')
+                ->with('error', 'Missing session ID for Financial Connections completion.');
+        }
+
+        $result = $this->stripeService->completeFinancialConnectionsBankAddition($user, $sessionId);
+
+        if ($result['success']) {
+            return redirect()->route('agent.payment-methods')
+                ->with('success', $result['message']);
+        }
+
+        return redirect()->route('agent.payment-methods')
+            ->with('error', $result['error']);
+    }
+
     public function storePaymentMethod(Request $request)
     {
         $request->validate([
