@@ -579,6 +579,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const data = await response.json();
 
+            const clientSecret = "fcsess_client_secret_pAen5WKJZaurdbVU3SzV2eCf";
+            const sessionId = "fcsess_1SDABF4RuL8q02TTjbnUkYrr";
+
             if (data.success) {
                 if (buttonText) buttonText.textContent = 'Opening bank connection...';
                 
@@ -590,7 +593,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (isLocalDevelopment) {
                     // Local development with polling
                     const { error } = await stripe.collectFinancialConnectionsAccounts({
-                        clientSecret: data.client_secret
+                        clientSecret: clientSecret
                     });
 
                     if (error) {
@@ -599,12 +602,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
                     // Start polling for completion
                     if (buttonText) buttonText.textContent = 'Adding your bank account...';
-                    await pollForAdditionCompletion(data.session_id);
+                    await pollForAdditionCompletion(sessionId);
                 } else {
                     // Production with return URL
                     const { error } = await stripe.collectFinancialConnectionsAccounts({
-                        clientSecret: data.client_secret,
-                        returnUrl: window.location.origin + '/agent/payment-methods/add-complete?session_id=' + data.session_id
+                        clientSecret: clientSecret,
+                        returnUrl: window.location.origin + '/agent/payment-methods/add-complete?session_id=' + sessionId
                     });
 
                     if (error) {
