@@ -209,7 +209,7 @@ class StripeService
             $customerId = $this->getOrCreateCustomer($paymentMethod->user);
             $paymentMethodId = $paymentMethod->stripe_payment_method_id;
 
-
+            // Step 1: Create charge on platform account (separate charge, no destination)
             $paymentIntent = PaymentIntent::create([
                 'amount' => $amounts['payable_amount_cents'],
                 'currency' => 'usd',
@@ -220,17 +220,74 @@ class StripeService
                     'enabled' => true,
                     'allow_redirects' => 'never',
                 ],
-                'transfer_data' => [
-                    'destination' => $agentConnectAccountId,
-                ],
-                'application_fee_amount' => $amounts['platform_fee_cents'],
                 'metadata' => [
                     'invoice_id' => $invoice->id,
                     'company_id' => $invoice->company_id,
                     'agent_id' => $invoice->agent_id,
                     'admin_commission' => $amounts['platform_fee'],
+                    'transfer_amount' => $invoice->total_amount,
                 ],
             ]);
+
+            // Initialize transfer ID variable
+            $transferId = null;
+
+            // Step 2: If payment succeeded, create separate transfer to agent
+            if ($paymentIntent->status === 'succeeded') {
+                try {
+                    // Transfer only the invoice amount (excluding platform fee) to the agent
+                    $transfer = Transfer::create([
+                        'amount' => intval($invoice->total_amount * 100), // Transfer only invoice amount
+                        'currency' => 'usd',
+                        'destination' => $agentConnectAccountId,
+                        'metadata' => [
+                            'invoice_id' => $invoice->id,
+                            'company_id' => $invoice->company_id,
+                            'agent_id' => $invoice->agent_id,
+                            'payment_intent_id' => $paymentIntent->id,
+                        ],
+                    ]);
+                    
+                    $transferId = $transfer->id;
+                    
+                    Log::info('Transfer created successfully', [
+                        'transfer_id' => $transfer->id,
+                        'amount' => $invoice->total_amount,
+                        'invoice_id' => $invoice->id,
+                        'destination' => $agentConnectAccountId,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Transfer creation failed: ' . $e->getMessage(), [
+                        'payment_intent_id' => $paymentIntent->id,
+                        'invoice_id' => $invoice->id,
+                        'agent_connect_account_id' => $agentConnectAccountId,
+                    ]);
+                    
+                    // Create transaction record with transfer_failed status
+                    $transaction = Transaction::create([
+                        'transaction_id' => Transaction::generateTransactionId(),
+                        'invoice_id' => $invoice->id,
+                        'company_id' => $invoice->company_id,
+                        'agent_id' => $invoice->agent_id,
+                        'amount' => $invoice->total_amount,
+                        'admin_commission' => $amounts['platform_fee'],
+                        'net_amount' => $invoice->total_amount,
+                        'type' => 'payment',
+                        'status' => 'transfer_failed',
+                        'stripe_payment_intent_id' => $paymentIntent->id,
+                        'payment_method_type' => $paymentMethod->type,
+                        'stripe_metadata' => json_encode($paymentIntent->metadata->toArray()),
+                        'notes' => 'Payment succeeded but transfer failed: ' . $e->getMessage(),
+                    ]);
+                    
+                    return [
+                        'success' => false,
+                        'error' => 'Payment succeeded but transfer to agent failed. Support has been notified.',
+                        'payment_intent' => $paymentIntent,
+                        'transaction' => $transaction,
+                    ];
+                }
+            }
 
             // Create transaction record
             $transaction = Transaction::create([
@@ -240,10 +297,11 @@ class StripeService
                 'agent_id' => $invoice->agent_id,
                 'amount' => $invoice->total_amount,
                 'admin_commission' => $amounts['platform_fee'],
-                'net_amount' => $invoice->total_amount - $amounts['platform_fee'],
+                'net_amount' => $invoice->total_amount,
                 'type' => 'payment',
                 'status' => $paymentIntent->status === 'succeeded' ? 'completed' : 'pending',
                 'stripe_payment_intent_id' => $paymentIntent->id,
+                'stripe_transfer_id' => $transferId,
                 'payment_method_type' => $paymentMethod->type,
                 'stripe_metadata' => json_encode($paymentIntent->metadata->toArray()),
             ]);
@@ -1128,6 +1186,15 @@ class StripeService
                 case 'payment_intent.payment_failed':
                     $this->handlePaymentFailed($event['data']['object']);
                     break;
+                case 'transfer.created':
+                    $this->handleTransferCreated($event['data']['object']);
+                    break;
+                case 'transfer.failed':
+                    $this->handleTransferFailed($event['data']['object']);
+                    break;
+                case 'transfer.reversed':
+                    $this->handleTransferReversed($event['data']['object']);
+                    break;
                 case 'account.updated':
                     $this->handleAccountUpdated($event['data']['object']);
                     break;
@@ -1164,6 +1231,81 @@ class StripeService
         $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent['id'])->first();
         if ($transaction) {
             $transaction->markAsFailed('Payment failed');
+        }
+    }
+
+    private function handleTransferCreated(array $transfer): void
+    {
+        Log::info('Transfer created webhook received', [
+            'transfer_id' => $transfer['id'],
+            'amount' => $transfer['amount'],
+            'destination' => $transfer['destination'],
+        ]);
+
+        // Update transaction with transfer information
+        $invoiceId = $transfer['metadata']['invoice_id'] ?? null;
+        if ($invoiceId) {
+            $transaction = Transaction::where('invoice_id', $invoiceId)
+                ->where('stripe_payment_intent_id', $transfer['metadata']['payment_intent_id'] ?? null)
+                ->first();
+            
+            if ($transaction && !$transaction->stripe_transfer_id) {
+                $transaction->update([
+                    'stripe_transfer_id' => $transfer['id'],
+                ]);
+                
+                Log::info('Transaction updated with transfer ID', [
+                    'transaction_id' => $transaction->id,
+                    'transfer_id' => $transfer['id'],
+                ]);
+            }
+        }
+    }
+
+    private function handleTransferFailed(array $transfer): void
+    {
+        Log::error('Transfer failed webhook received', [
+            'transfer_id' => $transfer['id'],
+            'failure_code' => $transfer['failure_code'] ?? 'unknown',
+            'failure_message' => $transfer['failure_message'] ?? 'No message provided',
+        ]);
+
+        $transaction = Transaction::where('stripe_transfer_id', $transfer['id'])->first();
+        if ($transaction) {
+            $failureReason = ($transfer['failure_code'] ?? 'unknown') . ': ' . ($transfer['failure_message'] ?? 'Transfer failed');
+            $transaction->markAsTransferFailed($failureReason);
+            
+            Log::warning('Transaction marked as transfer_failed', [
+                'transaction_id' => $transaction->id,
+                'invoice_id' => $transaction->invoice_id,
+                'reason' => $failureReason,
+            ]);
+        }
+    }
+
+    private function handleTransferReversed(array $transfer): void
+    {
+        Log::warning('Transfer reversed webhook received', [
+            'transfer_id' => $transfer['id'],
+            'amount' => $transfer['amount'],
+        ]);
+
+        $transaction = Transaction::where('stripe_transfer_id', $transfer['id'])->first();
+        if ($transaction) {
+            $transaction->update([
+                'status' => 'transfer_failed',
+                'notes' => 'Transfer was reversed',
+            ]);
+            
+            // Also update invoice status back to pending
+            if ($transaction->invoice) {
+                $transaction->invoice->update(['status' => 'pending']);
+            }
+            
+            Log::warning('Transaction and invoice updated due to transfer reversal', [
+                'transaction_id' => $transaction->id,
+                'invoice_id' => $transaction->invoice_id,
+            ]);
         }
     }
 
