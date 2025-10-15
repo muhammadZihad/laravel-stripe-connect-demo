@@ -188,31 +188,47 @@ class StripeService
 
             // Calculate amounts
             $totalAmount = $invoice->total_amount * 100; // Convert to cents
-            
-            // Calculate application fee: 10% of total but between $1-$4
-            $applicationFeeFloat = $invoice->total_amount * 0.1; // 10% of total
-            $applicationFeeFloat = max(1.00, min(4.00, $applicationFeeFloat)); // Constrain between $1-$4
-            $adminCommissionCents = round($applicationFeeFloat * 100); // Convert to cents
+            $adminCommissionCents = 1000; // Convert to cents
+            $totalPayableAmount = $totalAmount + $adminCommissionCents;
+            $totalStripeChargeAmount = (($totalPayableAmount + 30) / (1 - 0.029)) - $totalPayableAmount;
+
+            $totalPayableAmount += $totalStripeChargeAmount;
+
+            $amounts = [
+                'payable_amount_cents' => intval($totalPayableAmount),
+                'stripe_charge_cents' => intval($totalStripeChargeAmount),
+                'platform_fee_cents' => intval($adminCommissionCents),
+                'payable_amount' => $totalPayableAmount / 100,
+                'stripe_charge' => $totalStripeChargeAmount / 100,
+                'platform_fee' => $adminCommissionCents / 100,
+            ];
+
+
+            $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+            $companyConnectAccountId = $paymentMethod->user->stripe_connect_account_id;
+            $customerId = $this->getOrCreateCustomer($paymentMethod->user);
+            $paymentMethodId = $paymentMethod->stripe_payment_method_id;
+
 
             $paymentIntent = PaymentIntent::create([
-                'amount' => $totalAmount,
+                'amount' => $amounts['payable_amount_cents'],
                 'currency' => 'usd',
-                'customer' => $this->getOrCreateCustomer($paymentMethod->user),
-                'payment_method' => $paymentMethod->stripe_payment_method_id,
+                'customer' => $customerId,
+                'payment_method' => $paymentMethodId,
                 'confirm' => true,
                 'automatic_payment_methods' => [
                     'enabled' => true,
                     'allow_redirects' => 'never',
                 ],
                 'transfer_data' => [
-                    'destination' => $agentUser->stripe_connect_account_id,
+                    'destination' => $agentConnectAccountId,
                 ],
-                'application_fee_amount' => $adminCommissionCents,
+                'application_fee_amount' => $amounts['platform_fee_cents'],
                 'metadata' => [
                     'invoice_id' => $invoice->id,
                     'company_id' => $invoice->company_id,
                     'agent_id' => $invoice->agent_id,
-                    'admin_commission' => $applicationFeeFloat,
+                    'admin_commission' => $amounts['platform_fee'],
                 ],
             ]);
 
@@ -223,8 +239,8 @@ class StripeService
                 'company_id' => $invoice->company_id,
                 'agent_id' => $invoice->agent_id,
                 'amount' => $invoice->total_amount,
-                'admin_commission' => $applicationFeeFloat,
-                'net_amount' => $invoice->total_amount - $applicationFeeFloat,
+                'admin_commission' => $amounts['platform_fee'],
+                'net_amount' => $invoice->total_amount - $amounts['platform_fee'],
                 'type' => 'payment',
                 'status' => $paymentIntent->status === 'succeeded' ? 'completed' : 'pending',
                 'stripe_payment_intent_id' => $paymentIntent->id,

@@ -101,7 +101,7 @@ class Transaction extends Model
      */
     public function calculateNetAmount(): void
     {
-        $this->net_amount = $this->amount - $this->admin_commission;
+        $this->net_amount = (float)($this->amount - $this->admin_commission);
         $this->save();
     }
 
@@ -123,6 +123,26 @@ class Transaction extends Model
     {
         $this->update([
             'status' => 'failed',
+            'notes' => $reason,
+            'processed_at' => now(),
+        ]);
+    }
+
+    /**
+     * Check if transfer failed
+     */
+    public function isTransferFailed(): bool
+    {
+        return $this->status === 'transfer_failed';
+    }
+
+    /**
+     * Mark transaction as transfer failed
+     */
+    public function markAsTransferFailed(string $reason = null): void
+    {
+        $this->update([
+            'status' => 'transfer_failed',
             'notes' => $reason,
             'processed_at' => now(),
         ]);
