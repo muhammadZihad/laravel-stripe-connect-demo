@@ -166,25 +166,13 @@ class StripeService
     public function createPaymentIntent(Invoice $invoice, PaymentMethod $paymentMethod, float $adminCommission = 2.00): array
     {
         try {
-            // Get agent user for Connect account validation
+            // Get agent user for Connect account
             $agentUser = $invoice->agent->user;
+            $agentConnectAccountId = $agentUser->stripe_connect_account_id;
             
-            // Check if agent has completed Stripe Connect onboarding
-            if (!$agentUser->stripe_connect_account_id) {
-                return [
-                    'success' => false,
-                    'error' => 'Agent has not completed Stripe Connect onboarding. Please contact the agent to complete their account setup.',
-                ];
-            }
-
-            // Verify agent's onboarding status
-            $onboardingCheck = $this->checkOnboardingStatus($agentUser);
-            if (!$onboardingCheck['success'] || !$onboardingCheck['onboarding_complete']) {
-                return [
-                    'success' => false,
-                    'error' => 'Agent\'s Stripe Connect account is not fully set up. Please ask the agent to complete their onboarding process.',
-                ];
-            }
+            // Get company user for Connect account
+            $companyUser = $paymentMethod->user;
+            $companyConnectAccountId = $companyUser->stripe_connect_account_id;
 
             // Calculate amounts
             $totalAmount = $invoice->total_amount * 100; // Convert to cents
@@ -203,25 +191,27 @@ class StripeService
                 'platform_fee' => $adminCommissionCents / 100,
             ];
 
-
-            $agentConnectAccountId = $agentUser->stripe_connect_account_id;
-            $companyConnectAccountId = $paymentMethod->user->stripe_connect_account_id;
-            $customerId = $this->getOrCreateCustomer($paymentMethod->user);
+            $customerId = $this->getOrCreateCustomer($companyUser);
             $paymentMethodId = $paymentMethod->stripe_payment_method_id;
 
-            // Step 1: Create charge on platform account (separate charge, no destination)
+            // Create a transfer group to link payment and transfer together
+            $transferGroup = 'invoice_' . $invoice->id;
+
+            // Step 1: Create PaymentIntent on platform account
             $paymentIntent = PaymentIntent::create([
                 'amount' => $amounts['payable_amount_cents'],
                 'currency' => 'usd',
                 'customer' => $customerId,
                 'payment_method' => $paymentMethodId,
                 'confirm' => true,
+                'transfer_group' => $transferGroup, // Group transactions by invoice
                 'automatic_payment_methods' => [
                     'enabled' => true,
                     'allow_redirects' => 'never',
                 ],
                 'metadata' => [
                     'invoice_id' => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
                     'company_id' => $invoice->company_id,
                     'agent_id' => $invoice->agent_id,
                     'admin_commission' => $amounts['platform_fee'],
@@ -237,11 +227,13 @@ class StripeService
                 try {
                     // Transfer only the invoice amount (excluding platform fee) to the agent
                     $transfer = Transfer::create([
-                        'amount' => intval($invoice->total_amount * 100), // Transfer only invoice amount
+                        'amount' => intval($invoice->total_amount * 100),
                         'currency' => 'usd',
                         'destination' => $agentConnectAccountId,
+                        'transfer_group' => $transferGroup, // Same group as PaymentIntent
                         'metadata' => [
                             'invoice_id' => $invoice->id,
+                            'invoice_number' => $invoice->invoice_number,
                             'company_id' => $invoice->company_id,
                             'agent_id' => $invoice->agent_id,
                             'payment_intent_id' => $paymentIntent->id,
@@ -252,6 +244,7 @@ class StripeService
                     
                     Log::info('Transfer created successfully', [
                         'transfer_id' => $transfer->id,
+                        'payment_intent_id' => $paymentIntent->id,
                         'amount' => $invoice->total_amount,
                         'invoice_id' => $invoice->id,
                         'destination' => $agentConnectAccountId,
@@ -317,7 +310,7 @@ class StripeService
                 'transaction' => $transaction,
             ];
         } catch (\Exception $e) {
-            Log::error('Payment intent creation failed: ' . $e->getMessage());
+            Log::error('Charge creation failed: ' . $e->getMessage());
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
