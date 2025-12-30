@@ -13,7 +13,10 @@
                         <p class="text-gray-600">{{ $invoice->title }}</p>
                     </div>
                     <div class="flex gap-3">
-                        @if($invoice->status === 'pending')
+                        @if($invoice->status !== 'paid')
+                            <button onclick="openSendInvoiceModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
+                                📧 Send Invoice
+                            </button>
                             <a href="{{ route('super_admin.invoices.process-payment', $invoice) }}" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium">
                                 Process Payment
                             </a>
@@ -282,4 +285,200 @@
         </div>
     </div>
 </div>
+
+<!-- Send Invoice Modal -->
+<div id="sendInvoiceModal" style="display: none;" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+    <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white" style="max-width: 90vw;">
+        <div class="mt-3">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-medium text-gray-900">Send Invoice</h3>
+                <button onclick="closeSendInvoiceModal()" class="text-gray-400 hover:text-gray-500">
+                    <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <form id="sendInvoiceForm" onsubmit="sendInvoice(event)">
+                <div class="mb-4">
+                    <label for="recipientEmail" class="block text-sm font-medium text-gray-700 mb-2">
+                        Recipient Email Address
+                    </label>
+                    <input 
+                        type="email" 
+                        id="recipientEmail" 
+                        name="email"
+                        required
+                        value="{{ $invoice->agent->user->email }}"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="recipient@example.com"
+                    />
+                    <p class="mt-1 text-xs text-gray-500">
+                        A secure payment link will be sent to this email address
+                    </p>
+                </div>
+
+                <div class="bg-blue-50 border-l-4 border-blue-400 p-3 mb-4">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <p class="text-xs text-blue-700">
+                                The payment link will expire in 30 days. Recipients can pay using card or ACH transfer.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="sendSuccessMessage" class="hidden bg-green-50 border border-green-200 rounded-md p-3 mb-4">
+                    <div class="flex">
+                        <svg class="h-5 w-5 text-green-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                        </svg>
+                        <p id="sendSuccessText" class="text-sm text-green-700"></p>
+                    </div>
+                </div>
+
+                <div id="sendErrorMessage" class="hidden bg-red-50 border border-red-200 rounded-md p-3 mb-4">
+                    <div class="flex">
+                        <svg class="h-5 w-5 text-red-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+                        </svg>
+                        <p id="sendErrorText" class="text-sm text-red-700"></p>
+                    </div>
+                </div>
+
+                <div class="flex gap-3">
+                    <button 
+                        type="submit" 
+                        id="sendButton"
+                        class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium"
+                    >
+                        Send Invoice
+                    </button>
+                    <button 
+                        type="button" 
+                        onclick="closeSendInvoiceModal()"
+                        class="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded-md text-sm font-medium"
+                    >
+                        Cancel
+                    </button>
+                </div>
+            </form>
+
+            <div id="paymentLinkDisplay" class="hidden mt-4 p-3 bg-gray-50 rounded-md border border-gray-200">
+                <label class="block text-xs font-medium text-gray-700 mb-1">Payment Link (for reference)</label>
+                <div class="flex">
+                    <input 
+                        type="text" 
+                        id="paymentLinkInput" 
+                        readonly 
+                        class="flex-1 px-2 py-1 text-xs border border-gray-300 rounded-l-md bg-white"
+                    />
+                    <button 
+                        onclick="copyPaymentLink()"
+                        class="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs rounded-r-md"
+                    >
+                        Copy
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function openSendInvoiceModal() {
+        const modal = document.getElementById('sendInvoiceModal');
+        modal.style.display = 'block';
+        document.getElementById('sendSuccessMessage').classList.add('hidden');
+        document.getElementById('sendErrorMessage').classList.add('hidden');
+        document.getElementById('paymentLinkDisplay').classList.add('hidden');
+    }
+
+    function closeSendInvoiceModal() {
+        const modal = document.getElementById('sendInvoiceModal');
+        modal.style.display = 'none';
+    }
+
+    async function sendInvoice(event) {
+        event.preventDefault();
+        
+        const sendButton = document.getElementById('sendButton');
+        const email = document.getElementById('recipientEmail').value;
+        const successMessage = document.getElementById('sendSuccessMessage');
+        const errorMessage = document.getElementById('sendErrorMessage');
+        
+        // Hide previous messages
+        successMessage.classList.add('hidden');
+        errorMessage.classList.add('hidden');
+        
+        // Disable button and show loading
+        sendButton.disabled = true;
+        sendButton.textContent = 'Sending...';
+        
+        try {
+            const response = await fetch('{{ route('super_admin.invoices.send', $invoice) }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                },
+                body: JSON.stringify({ email: email })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                document.getElementById('sendSuccessText').textContent = result.message;
+                successMessage.classList.remove('hidden');
+                
+                // Show payment link
+                if (result.payment_url) {
+                    document.getElementById('paymentLinkInput').value = result.payment_url;
+                    document.getElementById('paymentLinkDisplay').classList.remove('hidden');
+                }
+                
+                // Reset form after 3 seconds
+                setTimeout(() => {
+                    closeSendInvoiceModal();
+                    document.getElementById('sendInvoiceForm').reset();
+                }, 3000);
+            } else {
+                document.getElementById('sendErrorText').textContent = result.error;
+                errorMessage.classList.remove('hidden');
+            }
+        } catch (error) {
+            document.getElementById('sendErrorText').textContent = 'An error occurred. Please try again.';
+            errorMessage.classList.remove('hidden');
+        } finally {
+            sendButton.disabled = false;
+            sendButton.textContent = 'Send Invoice';
+        }
+    }
+
+    function copyPaymentLink() {
+        const linkInput = document.getElementById('paymentLinkInput');
+        linkInput.select();
+        document.execCommand('copy');
+        
+        // Show copied feedback
+        const button = event.target;
+        const originalText = button.textContent;
+        button.textContent = 'Copied!';
+        setTimeout(() => {
+            button.textContent = originalText;
+        }, 2000);
+    }
+
+    // Close modal when clicking outside
+    document.getElementById('sendInvoiceModal').addEventListener('click', function(event) {
+        if (event.target === this) {
+            closeSendInvoiceModal();
+        }
+    });
+</script>
 @endsection 

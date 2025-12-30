@@ -67,6 +67,13 @@ Route::middleware('auth')->group(function () {
 // Stripe Webhook (public endpoint)
 Route::match(['get', 'post'], '/stripe/webhook', [StripeController::class, 'webhook'])->name('stripe.webhook');
 
+// Public Invoice Payment Routes (no auth required)
+Route::get('/invoice/pay/{token}', [StripeController::class, 'showPublicInvoicePayment'])->name('invoice.public.pay');
+Route::post('/invoice/pay/{token}', [StripeController::class, 'processPublicInvoicePayment'])->name('invoice.public.process');
+Route::post('/invoice/pay/{token}/attach-payment-method', [StripeController::class, 'attachPaymentMethodToPublicInvoice'])->name('invoice.public.attach-payment-method');
+Route::post('/invoice/pay/{token}/create-fc-session', [StripeController::class, 'createFinancialConnectionsSessionForPublicPayment'])->name('invoice.public.create-fc-session');
+Route::post('/invoice/pay/{token}/check-fc-status', [StripeController::class, 'checkPublicInvoiceFinancialConnectionsStatus'])->name('invoice.public.check-fc-status');
+
 /*
 |--------------------------------------------------------------------------
 | Super Admin Routes
@@ -100,6 +107,7 @@ Route::middleware(['auth', 'super_admin'])->prefix('super-admin')->name('super_a
     Route::get('/invoices/{invoice}', [SuperAdminController::class, 'showInvoice'])->name('invoices.show');
     Route::get('/invoices/{invoice}/process-payment', [SuperAdminController::class, 'processInvoicePayment'])->name('invoices.process-payment');
     Route::post('/invoices/{invoice}/payment', [SuperAdminController::class, 'processInvoicePayment'])->name('invoices.payment');
+    Route::post('/invoices/{invoice}/send', [SuperAdminController::class, 'sendInvoice'])->name('invoices.send');
     
     // Transactions
     Route::get('/transactions', [SuperAdminController::class, 'transactions'])->name('transactions');
@@ -142,6 +150,9 @@ Route::middleware(['auth', 'company'])->prefix('company')->name('company.')->gro
     // Invoice Payment
     Route::get('/invoices/{invoice}/pay', [CompanyController::class, 'showPayInvoice'])->name('invoices.pay');
     Route::post('/invoices/{invoice}/pay', [CompanyController::class, 'payInvoice'])->name('invoices.pay.process');
+    
+    // Send Invoice via Email
+    Route::post('/invoices/{invoice}/send', [CompanyController::class, 'sendInvoice'])->name('invoices.send');
     
     // Transactions
     Route::get('/transactions', [CompanyController::class, 'transactions'])->name('transactions');

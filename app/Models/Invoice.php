@@ -25,6 +25,9 @@ class Invoice extends Model
         'paid_date',
         'stripe_payment_intent_id',
         'invoice_items',
+        'payment_token',
+        'token_expires_at',
+        'payment_email',
     ];
 
     protected function casts(): array
@@ -36,6 +39,7 @@ class Invoice extends Model
             'due_date' => 'date',
             'paid_date' => 'date',
             'invoice_items' => 'array',
+            'token_expires_at' => 'datetime',
         ];
     }
 
@@ -109,5 +113,54 @@ class Invoice extends Model
     {
         $this->total_amount = $this->amount + $this->tax_amount;
         $this->save();
+    }
+
+    /**
+     * Generate a secure payment token
+     */
+    public function generatePaymentToken(int $expiresInDays = 30): string
+    {
+        $token = bin2hex(random_bytes(32));
+        
+        $this->update([
+            'payment_token' => $token,
+            'token_expires_at' => now()->addDays($expiresInDays),
+        ]);
+
+        return $token;
+    }
+
+    /**
+     * Check if payment token is valid
+     */
+    public function isPaymentTokenValid(string $token): bool
+    {
+        return $this->payment_token === $token 
+            && $this->token_expires_at 
+            && $this->token_expires_at->isFuture()
+            && !$this->isPaid();
+    }
+
+    /**
+     * Get the public payment URL for this invoice
+     */
+    public function getPaymentUrl(): ?string
+    {
+        if (!$this->payment_token) {
+            return null;
+        }
+
+        return url('/invoice/pay/' . $this->payment_token);
+    }
+
+    /**
+     * Invalidate payment token
+     */
+    public function invalidatePaymentToken(): void
+    {
+        $this->update([
+            'payment_token' => null,
+            'token_expires_at' => null,
+        ]);
     }
 }

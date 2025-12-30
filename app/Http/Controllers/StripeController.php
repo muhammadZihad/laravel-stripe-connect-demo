@@ -227,4 +227,201 @@ class StripeController extends Controller
             'error' => $result['error']
         ], 400);
     }
+
+    /**
+     * Show public invoice payment page (no auth required)
+     */
+    public function showPublicInvoicePayment(string $token)
+    {
+        $invoice = Invoice::where('payment_token', $token)
+            ->with(['company', 'agent.user'])
+            ->firstOrFail();
+
+        // Validate token
+        if (!$invoice->isPaymentTokenValid($token)) {
+            if ($invoice->isPaid()) {
+                return view('public.invoice-paid', compact('invoice'));
+            }
+            return view('public.invoice-expired');
+        }
+
+        // Get Stripe publishable key
+        $stripeKey = config('cashier.key');
+
+        return view('public.invoice-payment', compact('invoice', 'stripeKey'));
+    }
+
+    /**
+     * Attach payment method for public invoice payment (card)
+     */
+    public function attachPaymentMethodToPublicInvoice(Request $request, string $token)
+    {
+        $invoice = Invoice::where('payment_token', $token)
+            ->with(['company.user'])
+            ->firstOrFail();
+
+        // Validate token
+        if (!$invoice->isPaymentTokenValid($token)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Invalid or expired payment link.',
+            ], 400);
+        }
+
+        $request->validate([
+            'payment_method_id' => 'required|string|starts_with:pm_',
+        ]);
+
+        // Get the company user (payer for public invoice)
+        $user = $invoice->company->user;
+
+        // Attach payment method to user
+        $result = $this->stripeService->attachPaymentMethod(
+            $user, 
+            $request->payment_method_id, 
+            false // Not setting as default
+        );
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment method added successfully!',
+                'payment_method' => $result['payment_method'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
+    /**
+     * Create Financial Connections session for public invoice payment (ACH)
+     */
+    public function createFinancialConnectionsSessionForPublicPayment(Request $request, string $token)
+    {
+        $invoice = Invoice::where('payment_token', $token)
+            ->with(['company', 'agent'])
+            ->firstOrFail();
+
+        // Validate token
+        if (!$invoice->isPaymentTokenValid($token)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Invalid or expired payment link.',
+            ], 400);
+        }
+
+        // Create a temporary guest customer for this payment only
+        $result = $this->stripeService->createGuestFinancialConnectionsSession($invoice);
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'client_secret' => $result['client_secret'],
+                'session_id' => $result['session']->id,
+                'customer_id' => $result['customer_id'],
+                'message' => $result['message'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
+    /**
+     * Check Financial Connections session status for public invoice payment
+     */
+    public function checkPublicInvoiceFinancialConnectionsStatus(Request $request, string $token)
+    {
+        $invoice = Invoice::where('payment_token', $token)
+            ->with(['company', 'agent'])
+            ->firstOrFail();
+
+        // Validate token
+        if (!$invoice->isPaymentTokenValid($token)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Invalid or expired payment link.',
+            ], 400);
+        }
+
+        $request->validate([
+            'session_id' => 'required|string',
+            'customer_id' => 'required|string',
+        ]);
+
+        // Complete guest Financial Connections session
+        $result = $this->stripeService->completeGuestFinancialConnectionsSession(
+            $request->session_id, 
+            $request->customer_id,
+            $invoice
+        );
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'complete' => true,
+                'message' => $result['message'],
+                'payment_method_id' => $result['payment_method_id'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'complete' => false,
+            'error' => $result['error'] ?? 'Failed to complete bank account addition.',
+        ], 400);
+    }
+
+    /**
+     * Process public invoice payment
+     */
+    public function processPublicInvoicePayment(Request $request, string $token)
+    {
+        $invoice = Invoice::where('payment_token', $token)
+            ->with(['company.user', 'agent.user'])
+            ->firstOrFail();
+
+        // Validate token
+        if (!$invoice->isPaymentTokenValid($token)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Invalid or expired payment link.',
+            ], 400);
+        }
+
+        $request->validate([
+            'stripe_payment_method_id' => 'required|string|starts_with:pm_',
+            'customer_id' => 'nullable|string|starts_with:cus_',
+        ]);
+
+        // Process guest payment directly with Stripe payment method ID
+        // customer_id is optional (only needed for ACH if already created)
+        $result = $this->stripeService->createGuestPaymentIntent(
+            $invoice, 
+            $request->stripe_payment_method_id,
+            $request->customer_id
+        );
+
+        if ($result['success']) {
+            // Invalidate payment token after successful payment
+            $invoice->invalidatePaymentToken();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment processed successfully!',
+                'transaction' => $result['transaction'],
+                'payment_intent' => $result['payment_intent'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
 }

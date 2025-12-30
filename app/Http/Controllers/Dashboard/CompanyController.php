@@ -705,4 +705,57 @@ class CompanyController extends Controller
 
         return back()->with('error', 'Payment failed: ' . $result['error']);
     }
+
+    /**
+     * Send invoice via email
+     */
+    public function sendInvoice(Request $request, Invoice $invoice)
+    {
+        $company = Auth::user()->company;
+        
+        // Ensure invoice belongs to this company
+        if ($invoice->company_id !== $company->id) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Unauthorized.',
+            ], 403);
+        }
+
+        // Check if invoice is already paid
+        if ($invoice->status === 'paid') {
+            return response()->json([
+                'success' => false,
+                'error' => 'Cannot send payment link for a paid invoice.',
+            ], 400);
+        }
+
+        $request->validate([
+            'email' => 'required|email',
+        ]);
+
+        // Generate or regenerate payment token
+        $token = $invoice->generatePaymentToken();
+        $paymentUrl = $invoice->getPaymentUrl();
+
+        // Update payment email
+        $invoice->update(['payment_email' => $request->email]);
+
+        try {
+            // Send email
+            \Mail::to($request->email)->send(new \App\Mail\InvoicePaymentMail($invoice, $paymentUrl));
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Invoice sent successfully to ' . $request->email,
+                'payment_url' => $paymentUrl,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to send invoice email: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'error' => 'Failed to send email. Please try again later.',
+            ], 500);
+        }
+    }
 }
