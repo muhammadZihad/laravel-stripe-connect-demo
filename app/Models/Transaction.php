@@ -101,7 +101,8 @@ class Transaction extends Model
      */
     public function calculateNetAmount(): void
     {
-        $this->net_amount = (float)($this->amount - $this->admin_commission);
+        $netAmount = (float)$this->amount - (float)$this->admin_commission;
+        $this->net_amount = number_format($netAmount, 2, '.', '');
         $this->save();
     }
 
@@ -146,5 +147,36 @@ class Transaction extends Model
             'notes' => $reason,
             'processed_at' => now(),
         ]);
+    }
+
+    /**
+     * Check if transaction is awaiting 3DS authentication
+     */
+    public function isAwaitingAuthentication(): bool
+    {
+        return $this->isPending() && 
+               $this->stripe_payment_intent_id && 
+               !$this->stripe_transfer_id;
+    }
+
+    /**
+     * Get human-readable status with details
+     */
+    public function getStatusWithDetails(): string
+    {
+        if ($this->isPending() && $this->isAwaitingAuthentication()) {
+            return 'Pending - Awaiting 3D Secure Authentication';
+        }
+        
+        return ucfirst($this->status);
+    }
+
+    /**
+     * Check if transaction is old enough to reconcile
+     */
+    public function shouldReconcile(int $minutesOld = 10): bool
+    {
+        return $this->isPending() && 
+               $this->created_at->diffInMinutes(now()) > $minutesOld;
     }
 }

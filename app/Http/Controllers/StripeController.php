@@ -50,7 +50,7 @@ class StripeController extends Controller
         $user = Auth::user();
 
         $result = $this->stripeService->checkOnboardingStatus($user);
-        
+
         if ($result['success'] && $result['onboarding_complete']) {
             return redirect()->route($user->role . '.dashboard')
                 ->with('success', 'Stripe Connect onboarding completed successfully!');
@@ -277,8 +277,8 @@ class StripeController extends Controller
 
         // Attach payment method to user
         $result = $this->stripeService->attachPaymentMethod(
-            $user, 
-            $request->payment_method_id, 
+            $user,
+            $request->payment_method_id,
             false // Not setting as default
         );
 
@@ -356,7 +356,7 @@ class StripeController extends Controller
 
         // Complete guest Financial Connections session
         $result = $this->stripeService->completeGuestFinancialConnectionsSession(
-            $request->session_id, 
+            $request->session_id,
             $request->customer_id,
             $invoice
         );
@@ -402,12 +402,25 @@ class StripeController extends Controller
         // Process guest payment directly with Stripe payment method ID
         // customer_id is optional (only needed for ACH if already created)
         $result = $this->stripeService->createGuestPaymentIntent(
-            $invoice, 
+            $invoice,
             $request->stripe_payment_method_id,
             $request->customer_id
         );
 
         if ($result['success']) {
+            $paymentIntent = $result['payment_intent'];
+
+            // Check if 3DS authentication is required
+            if ($paymentIntent->status === 'requires_action') {
+                return response()->json([
+                    'success' => true,
+                    'requires_action' => true,
+                    'payment_intent_client_secret' => $paymentIntent->client_secret,
+                    'payment_intent_id' => $paymentIntent->id,
+                    'message' => 'Additional authentication required.',
+                ]);
+            }
+
             // Invalidate payment token after successful payment
             $invoice->invalidatePaymentToken();
 
@@ -415,7 +428,7 @@ class StripeController extends Controller
                 'success' => true,
                 'message' => 'Payment processed successfully!',
                 'transaction' => $result['transaction'],
-                'payment_intent' => $result['payment_intent'],
+                'payment_intent' => $paymentIntent,
             ]);
         }
 
@@ -423,5 +436,114 @@ class StripeController extends Controller
             'success' => false,
             'error' => $result['error'],
         ], 400);
+    }
+
+    /**
+     * Confirm public invoice payment after 3DS authentication
+     */
+    public function confirmPublicInvoicePayment(Request $request, string $token)
+    {
+        $invoice = Invoice::where('payment_token', $token)
+            ->with(['company.user', 'agent.user'])
+            ->firstOrFail();
+
+        // Validate token (but allow if invoice is already being processed)
+        if (!$invoice->isPaymentTokenValid($token) && !$invoice->isPaid()) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Invalid or expired payment link.',
+            ], 400);
+        }
+
+        $request->validate([
+            'payment_intent_id' => 'required|string|starts_with:pi_',
+        ]);
+
+        try {
+            // Retrieve the PaymentIntent from Stripe to verify status
+            $paymentIntent = \Stripe\PaymentIntent::retrieve($request->payment_intent_id);
+
+            if ($paymentIntent->status === 'succeeded') {
+                // Find the existing pending transaction
+                $transaction = \App\Models\Transaction::where('stripe_payment_intent_id', $paymentIntent->id)->first();
+
+                if ($transaction) {
+                    // Get agent user for Connect account
+                    $agentUser = $invoice->agent->user;
+                    $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+                    $transferGroup = 'invoice_' . $invoice->id;
+
+                    // Create transfer to agent
+                    try {
+                        $transfer = \Stripe\Transfer::create([
+                            'amount' => intval($invoice->total_amount * 100),
+                            'currency' => 'usd',
+                            'destination' => $agentConnectAccountId,
+                            'transfer_group' => $transferGroup,
+                            'metadata' => [
+                                'invoice_id' => $invoice->id,
+                                'invoice_number' => $invoice->invoice_number,
+                                'company_id' => $invoice->company_id,
+                                'agent_id' => $invoice->agent_id,
+                                'payment_intent_id' => $paymentIntent->id,
+                                'payment_type' => 'guest_3ds',
+                            ],
+                        ]);
+
+                        $transaction->update(['stripe_transfer_id' => $transfer->id]);
+
+                        Log::info('3DS payment transfer created successfully', [
+                            'transfer_id' => $transfer->id,
+                            'payment_intent_id' => $paymentIntent->id,
+                            'invoice_id' => $invoice->id,
+                        ]);
+                    } catch (\Exception $e) {
+                        Log::error('3DS payment transfer failed: ' . $e->getMessage(), [
+                            'payment_intent_id' => $paymentIntent->id,
+                            'invoice_id' => $invoice->id,
+                        ]);
+
+                        $transaction->update([
+                            'status' => 'transfer_failed',
+                            'notes' => '3DS payment succeeded but transfer failed: ' . $e->getMessage(),
+                        ]);
+
+                        return response()->json([
+                            'success' => false,
+                            'error' => 'Payment succeeded but transfer to agent failed. Support has been notified.',
+                        ], 400);
+                    }
+
+                    // Update transaction status
+                    $transaction->markAsCompleted();
+                }
+
+                // Mark invoice as paid
+                $invoice->markAsPaid();
+
+                // Invalidate payment token
+                $invoice->invalidatePaymentToken();
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Payment confirmed successfully!',
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'error' => 'Payment not yet completed. Status: ' . $paymentIntent->status,
+            ], 400);
+        } catch (\Exception $e) {
+            Log::error('Payment confirmation failed: ' . $e->getMessage(), [
+                'payment_intent_id' => $request->payment_intent_id,
+                'invoice_id' => $invoice->id,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'Failed to confirm payment: ' . $e->getMessage(),
+            ], 400);
+        }
     }
 }

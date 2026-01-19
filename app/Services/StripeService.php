@@ -1198,6 +1198,12 @@ class StripeService
                 case 'payment_intent.payment_failed':
                     $this->handlePaymentFailed($event['data']['object']);
                     break;
+                case 'payment_intent.canceled':
+                    $this->handlePaymentCanceled($event['data']['object']);
+                    break;
+                case 'payment_intent.requires_action':
+                    $this->handlePaymentRequiresAction($event['data']['object']);
+                    break;
                 case 'transfer.created':
                     $this->handleTransferCreated($event['data']['object']);
                     break;
@@ -1233,6 +1239,57 @@ class StripeService
     {
         $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent['id'])->first();
         if ($transaction) {
+            // Check if transfer was already created (shouldn't complete without transfer)
+            if (!$transaction->stripe_transfer_id && $transaction->status === 'pending') {
+                // This is a 3DS payment that succeeded but hasn't been transferred yet
+                Log::info('3DS payment succeeded via webhook, creating transfer', [
+                    'payment_intent_id' => $paymentIntent['id'],
+                    'transaction_id' => $transaction->id,
+                    'invoice_id' => $transaction->invoice_id,
+                ]);
+
+                try {
+                    $invoice = $transaction->invoice;
+                    $agentUser = $invoice->agent->user;
+                    $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+                    $transferGroup = 'invoice_' . $invoice->id;
+
+                    // Create transfer to agent
+                    $transfer = Transfer::create([
+                        'amount' => intval($invoice->total_amount * 100),
+                        'currency' => 'usd',
+                        'destination' => $agentConnectAccountId,
+                        'transfer_group' => $transferGroup,
+                        'metadata' => [
+                            'invoice_id' => $invoice->id,
+                            'invoice_number' => $invoice->invoice_number,
+                            'company_id' => $invoice->company_id,
+                            'agent_id' => $invoice->agent_id,
+                            'payment_intent_id' => $paymentIntent['id'],
+                            'completed_via' => 'webhook_3ds',
+                        ],
+                    ]);
+
+                    $transaction->update(['stripe_transfer_id' => $transfer->id]);
+
+                    Log::info('3DS payment transfer created successfully via webhook', [
+                        'transfer_id' => $transfer->id,
+                        'payment_intent_id' => $paymentIntent['id'],
+                        'transaction_id' => $transaction->id,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Webhook transfer creation failed for 3DS payment: ' . $e->getMessage(), [
+                        'payment_intent_id' => $paymentIntent['id'],
+                        'transaction_id' => $transaction->id,
+                        'invoice_id' => $transaction->invoice_id,
+                    ]);
+
+                    $transaction->markAsTransferFailed('Webhook transfer failed: ' . $e->getMessage());
+                    return;
+                }
+            }
+
+            // Mark transaction as completed
             $transaction->markAsCompleted();
             $transaction->invoice->markAsPaid();
         }
@@ -1242,7 +1299,17 @@ class StripeService
     {
         $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent['id'])->first();
         if ($transaction) {
-            $transaction->markAsFailed('Payment failed');
+            $failureMessage = $paymentIntent['last_payment_error']['message'] ?? 'Payment failed';
+            $failureCode = $paymentIntent['last_payment_error']['code'] ?? 'unknown';
+            
+            Log::warning('Payment failed via webhook', [
+                'payment_intent_id' => $paymentIntent['id'],
+                'transaction_id' => $transaction->id,
+                'failure_code' => $failureCode,
+                'failure_message' => $failureMessage,
+            ]);
+            
+            $transaction->markAsFailed($failureCode . ': ' . $failureMessage);
         }
     }
 
@@ -1406,6 +1473,172 @@ class StripeService
                 'session_id' => $session['id'],
             ]);
         }
+    }
+
+    private function handlePaymentCanceled(array $paymentIntent): void
+    {
+        $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent['id'])->first();
+        if ($transaction && $transaction->isPending()) {
+            Log::info('Payment intent canceled via webhook', [
+                'payment_intent_id' => $paymentIntent['id'],
+                'transaction_id' => $transaction->id,
+            ]);
+            
+            $transaction->markAsFailed('Payment was canceled');
+        }
+    }
+
+    private function handlePaymentRequiresAction(array $paymentIntent): void
+    {
+        Log::info('Payment requires action (3DS authentication)', [
+            'payment_intent_id' => $paymentIntent['id'],
+            'next_action_type' => $paymentIntent['next_action']['type'] ?? 'unknown',
+        ]);
+        
+        // Transaction should already be in pending status
+        // This webhook is mainly for logging/monitoring
+    }
+
+    /**
+     * Reconcile pending transactions by checking their status with Stripe
+     * This method can be called by a scheduled job to handle abandoned 3DS flows
+     */
+    public function reconcilePendingTransactions(int $olderThanMinutes = 10): array
+    {
+        $reconciled = [];
+        $failed = [];
+        
+        // Get pending transactions older than specified minutes
+        $pendingTransactions = Transaction::where('status', 'pending')
+            ->where('created_at', '<', now()->subMinutes($olderThanMinutes))
+            ->get();
+
+        foreach ($pendingTransactions as $transaction) {
+            try {
+                if (!$transaction->stripe_payment_intent_id) {
+                    continue;
+                }
+
+                // Retrieve the current status from Stripe
+                $paymentIntent = PaymentIntent::retrieve($transaction->stripe_payment_intent_id);
+
+                Log::info('Reconciling pending transaction', [
+                    'transaction_id' => $transaction->id,
+                    'payment_intent_id' => $paymentIntent->id,
+                    'payment_intent_status' => $paymentIntent->status,
+                    'invoice_id' => $transaction->invoice_id,
+                ]);
+
+                switch ($paymentIntent->status) {
+                    case 'succeeded':
+                        // Payment succeeded but wasn't properly processed
+                        if (!$transaction->stripe_transfer_id) {
+                            // Need to create transfer
+                            $invoice = $transaction->invoice;
+                            $agentUser = $invoice->agent->user;
+                            $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+                            $transferGroup = 'invoice_' . $invoice->id;
+
+                            try {
+                                $transfer = Transfer::create([
+                                    'amount' => intval($invoice->total_amount * 100),
+                                    'currency' => 'usd',
+                                    'destination' => $agentConnectAccountId,
+                                    'transfer_group' => $transferGroup,
+                                    'metadata' => [
+                                        'invoice_id' => $invoice->id,
+                                        'invoice_number' => $invoice->invoice_number,
+                                        'company_id' => $invoice->company_id,
+                                        'agent_id' => $invoice->agent_id,
+                                        'payment_intent_id' => $paymentIntent->id,
+                                        'completed_via' => 'reconciliation',
+                                    ],
+                                ]);
+
+                                $transaction->update(['stripe_transfer_id' => $transfer->id]);
+
+                                Log::info('Transfer created during reconciliation', [
+                                    'transfer_id' => $transfer->id,
+                                    'transaction_id' => $transaction->id,
+                                ]);
+                            } catch (\Exception $e) {
+                                Log::error('Reconciliation transfer failed: ' . $e->getMessage(), [
+                                    'transaction_id' => $transaction->id,
+                                ]);
+                                
+                                $transaction->markAsTransferFailed('Reconciliation transfer failed: ' . $e->getMessage());
+                                $failed[] = [
+                                    'transaction_id' => $transaction->id,
+                                    'error' => 'Transfer failed: ' . $e->getMessage(),
+                                ];
+                                continue;
+                            }
+                        }
+
+                        $transaction->markAsCompleted();
+                        $transaction->invoice->markAsPaid();
+                        
+                        $reconciled[] = [
+                            'transaction_id' => $transaction->id,
+                            'status' => 'completed',
+                            'payment_intent_id' => $paymentIntent->id,
+                        ];
+                        break;
+
+                    case 'requires_action':
+                        // Still waiting for 3DS authentication
+                        Log::info('Transaction still requires action', [
+                            'transaction_id' => $transaction->id,
+                            'payment_intent_id' => $paymentIntent->id,
+                        ]);
+                        break;
+
+                    case 'canceled':
+                    case 'requires_payment_method':
+                        // Payment failed or was canceled
+                        $transaction->markAsFailed('Payment ' . $paymentIntent->status);
+                        
+                        $reconciled[] = [
+                            'transaction_id' => $transaction->id,
+                            'status' => 'failed',
+                            'reason' => $paymentIntent->status,
+                        ];
+                        break;
+
+                    case 'processing':
+                        // Payment is still processing (common for ACH)
+                        Log::info('Transaction still processing', [
+                            'transaction_id' => $transaction->id,
+                            'payment_intent_id' => $paymentIntent->id,
+                        ]);
+                        break;
+
+                    default:
+                        Log::warning('Unknown payment intent status during reconciliation', [
+                            'transaction_id' => $transaction->id,
+                            'payment_intent_id' => $paymentIntent->id,
+                            'status' => $paymentIntent->status,
+                        ]);
+                        break;
+                }
+            } catch (\Exception $e) {
+                Log::error('Reconciliation failed for transaction: ' . $e->getMessage(), [
+                    'transaction_id' => $transaction->id,
+                ]);
+                
+                $failed[] = [
+                    'transaction_id' => $transaction->id,
+                    'error' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return [
+            'success' => true,
+            'checked' => $pendingTransactions->count(),
+            'reconciled' => $reconciled,
+            'failed' => $failed,
+        ];
     }
 
     /**
