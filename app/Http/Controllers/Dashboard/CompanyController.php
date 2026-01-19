@@ -27,7 +27,7 @@ class CompanyController extends Controller
     public function dashboard()
     {
         $company = Auth::user()->company;
-        
+
         $stats = [
             'total_agents' => $company->agents()->count(),
             'active_agents' => $company->agents()->where('is_active', true)->count(),
@@ -57,7 +57,11 @@ class CompanyController extends Controller
         $stripeOnboardingComplete = Auth::user()->isStripeOnboardingComplete();
 
         return view('company.dashboard', compact(
-            'company', 'stats', 'recentInvoices', 'recentTransactions', 'stripeOnboardingComplete'
+            'company',
+            'stats',
+            'recentInvoices',
+            'recentTransactions',
+            'stripeOnboardingComplete'
         ));
     }
 
@@ -78,7 +82,7 @@ class CompanyController extends Controller
     public function showAgent(Agent $agent)
     {
         $agent->load(['user', 'invoices', 'transactions', 'paymentMethods']);
-        
+
         $stats = [
             'total_invoices' => $agent->invoices->count(),
             'pending_invoices' => $agent->invoices->where('status', 'pending')->count(),
@@ -111,21 +115,37 @@ class CompanyController extends Controller
     /**
      * Invoices Management
      */
-    public function invoices()
+    public function invoices(Request $request)
     {
         $company = Auth::user()->company;
-        $invoices = $company->invoices()
-            ->with('agent.user')
-            ->orderBy('created_at', 'desc')
-            ->paginate(15);
 
-        return view('company.invoices.index', compact('invoices'));
+        $query = $company->invoices()
+            ->with('agent.user');
+
+        // Filter by agent
+        if ($request->filled('agent_id')) {
+            $query->where('agent_id', $request->agent_id);
+        }
+
+        // Filter by status
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        $invoices = $query->orderBy('created_at', 'desc')
+            ->paginate(15)
+            ->withQueryString();
+
+        // Get agents for filter dropdown
+        $agents = $company->agents()->with('user')->get();
+
+        return view('company.invoices.index', compact('invoices', 'agents'));
     }
 
     public function showInvoice(Invoice $invoice)
     {
         $invoice->load(['agent.user', 'transactions']);
-        
+
         return view('company.invoices.show', compact('invoice'));
     }
 
@@ -133,14 +153,14 @@ class CompanyController extends Controller
     {
         $company = Auth::user()->company;
         $agents = $company->agents()->with('user')->where('is_active', true)->get();
-        
+
         return view('company.invoices.create', compact('agents'));
     }
 
     public function storeInvoice(Request $request)
     {
         $company = Auth::user()->company;
-        
+
         $request->validate([
             'agent_id' => 'required|exists:agents,id',
             'title' => 'required|string|max:255',
@@ -178,7 +198,7 @@ class CompanyController extends Controller
     {
         $company = Auth::user()->company;
         $agents = $company->agents()->with('user')->where('is_active', true)->get();
-        
+
         return view('company.invoices.edit', compact('invoice', 'agents'));
     }
 
@@ -231,7 +251,7 @@ class CompanyController extends Controller
     public function showTransaction(Transaction $transaction)
     {
         $transaction->load(['invoice', 'agent.user']);
-        
+
         return view('company.transactions.show', compact('transaction'));
     }
 
@@ -257,7 +277,7 @@ class CompanyController extends Controller
     public function createFinancialConnectionsSession(Request $request)
     {
         $user = Auth::user();
-        
+
         $result = $this->stripeService->createFinancialConnectionsSessionForAddition($user);
 
         if ($result['success']) {
@@ -281,7 +301,7 @@ class CompanyController extends Controller
     public function checkFinancialConnectionsAdditionStatus(Request $request)
     {
         $user = Auth::user();
-        
+
         $request->validate([
             'session_id' => 'required|string',
         ]);
@@ -303,10 +323,10 @@ class CompanyController extends Controller
     public function completeFinancialConnectionsAddition(Request $request)
     {
         $user = Auth::user();
-        
+
         // Get session_id from query parameter for return URL
         $sessionId = $request->query('session_id') ?? $request->input('session_id');
-        
+
         if (!$sessionId) {
             return redirect()->route('company.payment-methods')
                 ->with('error', 'Missing session ID for Financial Connections completion.');
@@ -350,7 +370,7 @@ class CompanyController extends Controller
     public function setDefaultPaymentMethod(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure payment method belongs to this user
         if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
@@ -364,7 +384,7 @@ class CompanyController extends Controller
     public function deletePaymentMethod(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure payment method belongs to this user
         if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
@@ -385,7 +405,7 @@ class CompanyController extends Controller
     public function initiateMicroDepositVerification(Request $request, PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -415,7 +435,7 @@ class CompanyController extends Controller
     public function showVerifyForm(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized access to payment method.');
@@ -448,7 +468,7 @@ class CompanyController extends Controller
     public function initiateVerification(Request $request, PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -492,7 +512,7 @@ class CompanyController extends Controller
     public function checkFinancialConnectionsStatus(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -528,7 +548,7 @@ class CompanyController extends Controller
     public function completeFinancialConnectionsVerification(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return redirect()->route('company.payment-methods')
@@ -552,7 +572,7 @@ class CompanyController extends Controller
     public function verifyMicroDeposits(Request $request, PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -594,14 +614,14 @@ class CompanyController extends Controller
     public function profile()
     {
         $company = Auth::user()->company;
-        
+
         return view('company.profile', compact('company'));
     }
 
     public function updateProfile(Request $request)
     {
         $company = Auth::user()->company;
-        
+
         $request->validate([
             'company_name' => 'required|string|max:255',
             'business_type' => 'nullable|string|max:255',
@@ -622,7 +642,7 @@ class CompanyController extends Controller
     public function reports()
     {
         $company = Auth::user()->company;
-        
+
         $monthlyStats = $company->transactions()
             ->selectRaw('YEAR(created_at) as year, MONTH(created_at) as month, COUNT(*) as count, SUM(amount) as total')
             ->where('status', 'completed')
@@ -633,9 +653,11 @@ class CompanyController extends Controller
             ->get();
 
         $agentPerformance = $company->agents()
-            ->withSum(['transactions' => function($query) {
-                $query->where('status', 'completed');
-            }], 'net_amount')
+            ->withSum([
+                'transactions' => function ($query) {
+                    $query->where('status', 'completed');
+                }
+            ], 'net_amount')
             ->withCount(['invoices', 'transactions'])
             ->get();
 
@@ -648,7 +670,7 @@ class CompanyController extends Controller
     public function showPayInvoice(Invoice $invoice)
     {
         $company = Auth::user()->company;
-        
+
         // Ensure invoice belongs to this company
         if ($invoice->company_id !== $company->id) {
             abort(403, 'Unauthorized.');
@@ -665,7 +687,10 @@ class CompanyController extends Controller
             ->where('is_active', true)
             ->get();
 
-        return view('company.invoices.pay', compact('invoice', 'paymentMethods'));
+        // Get Stripe publishable key for 3DS
+        $stripeKey = config('cashier.key');
+
+        return view('company.invoices.pay', compact('invoice', 'paymentMethods', 'stripeKey'));
     }
 
     /**
@@ -674,15 +699,21 @@ class CompanyController extends Controller
     public function payInvoice(Request $request, Invoice $invoice)
     {
         $company = Auth::user()->company;
-        
+
         // Ensure invoice belongs to this company
         if ($invoice->company_id !== $company->id) {
-            abort(403, 'Unauthorized.');
+            return response()->json([
+                'success' => false,
+                'error' => 'Unauthorized.',
+            ], 403);
         }
 
         // Check if invoice is already paid
         if ($invoice->status === 'paid') {
-            return back()->with('error', 'This invoice has already been paid.');
+            return response()->json([
+                'success' => false,
+                'error' => 'This invoice has already been paid.',
+            ], 400);
         }
 
         $request->validate([
@@ -693,16 +724,198 @@ class CompanyController extends Controller
 
         // Ensure the payment method belongs to the current user
         if ($paymentMethod->user_id !== Auth::user()->id) {
-            return back()->with('error', 'Invalid payment method for this invoice.');
+            return response()->json([
+                'success' => false,
+                'error' => 'Invalid payment method for this invoice.',
+            ], 400);
         }
 
         $result = $this->stripeService->createPaymentIntent($invoice, $paymentMethod);
 
         if ($result['success']) {
-            return redirect()->route('company.invoices.show', $invoice)
-                ->with('success', 'Payment processed successfully!');
+            $paymentIntent = $result['payment_intent'];
+
+            // Check if 3DS authentication is required
+            if ($paymentIntent->status === 'requires_action') {
+                return response()->json([
+                    'success' => true,
+                    'requires_action' => true,
+                    'payment_intent_client_secret' => $paymentIntent->client_secret,
+                    'payment_intent_id' => $paymentIntent->id,
+                    'message' => 'Additional authentication required.',
+                ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment processed successfully!',
+                'redirect_url' => route('company.invoices.show', $invoice),
+            ]);
         }
 
-        return back()->with('error', 'Payment failed: ' . $result['error']);
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
+    /**
+     * Confirm payment after 3DS authentication
+     */
+    public function confirmPayment(Request $request, Invoice $invoice)
+    {
+        $company = Auth::user()->company;
+
+        // Ensure invoice belongs to this company
+        if ($invoice->company_id !== $company->id) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Unauthorized.',
+            ], 403);
+        }
+
+        $request->validate([
+            'payment_intent_id' => 'required|string|starts_with:pi_',
+        ]);
+
+        try {
+            // Retrieve the PaymentIntent from Stripe to verify status
+            $paymentIntent = \Stripe\PaymentIntent::retrieve($request->payment_intent_id);
+
+            if ($paymentIntent->status === 'succeeded') {
+                // Find the existing pending transaction
+                $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent->id)->first();
+
+                if ($transaction) {
+                    // Get agent user for Connect account
+                    $agentUser = $invoice->agent->user;
+                    $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+                    $transferGroup = 'invoice_' . $invoice->id;
+
+                    // Create transfer to agent if not already done
+                    if (!$transaction->stripe_transfer_id) {
+                        try {
+                            $transfer = \Stripe\Transfer::create([
+                                'amount' => intval($invoice->total_amount * 100),
+                                'currency' => 'usd',
+                                'destination' => $agentConnectAccountId,
+                                'transfer_group' => $transferGroup,
+                                'metadata' => [
+                                    'invoice_id' => $invoice->id,
+                                    'invoice_number' => $invoice->invoice_number,
+                                    'company_id' => $invoice->company_id,
+                                    'agent_id' => $invoice->agent_id,
+                                    'payment_intent_id' => $paymentIntent->id,
+                                    'payment_type' => 'internal_3ds',
+                                ],
+                            ]);
+
+                            $transaction->update(['stripe_transfer_id' => $transfer->id]);
+
+                            \Log::info('3DS internal payment transfer created successfully', [
+                                'transfer_id' => $transfer->id,
+                                'payment_intent_id' => $paymentIntent->id,
+                                'invoice_id' => $invoice->id,
+                            ]);
+                        } catch (\Exception $e) {
+                            \Log::error('3DS internal payment transfer failed: ' . $e->getMessage(), [
+                                'payment_intent_id' => $paymentIntent->id,
+                                'invoice_id' => $invoice->id,
+                            ]);
+
+                            $transaction->update([
+                                'status' => 'transfer_failed',
+                                'notes' => '3DS payment succeeded but transfer failed: ' . $e->getMessage(),
+                            ]);
+
+                            return response()->json([
+                                'success' => false,
+                                'error' => 'Payment succeeded but transfer to agent failed. Support has been notified.',
+                            ], 400);
+                        }
+                    }
+
+                    // Update transaction status
+                    $transaction->markAsCompleted();
+                }
+
+                // Mark invoice as paid
+                $invoice->markAsPaid();
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Payment confirmed successfully!',
+                    'redirect_url' => route('company.invoices.show', $invoice),
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'error' => 'Payment not yet completed. Status: ' . $paymentIntent->status,
+            ], 400);
+        } catch (\Exception $e) {
+            \Log::error('Internal payment confirmation failed: ' . $e->getMessage(), [
+                'payment_intent_id' => $request->payment_intent_id,
+                'invoice_id' => $invoice->id,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'Failed to confirm payment: ' . $e->getMessage(),
+            ], 400);
+        }
+    }
+
+    /**
+     * Send invoice via email
+     */
+    public function sendInvoice(Request $request, Invoice $invoice)
+    {
+        $company = Auth::user()->company;
+
+        // Ensure invoice belongs to this company
+        if ($invoice->company_id !== $company->id) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Unauthorized.',
+            ], 403);
+        }
+
+        // Check if invoice is already paid
+        if ($invoice->status === 'paid') {
+            return response()->json([
+                'success' => false,
+                'error' => 'Cannot send payment link for a paid invoice.',
+            ], 400);
+        }
+
+        $request->validate([
+            'email' => 'required|email',
+        ]);
+
+        // Generate or regenerate payment token
+        $token = $invoice->generatePaymentToken();
+        $paymentUrl = $invoice->getPaymentUrl();
+
+        // Update payment email
+        $invoice->update(['payment_email' => $request->email]);
+
+        try {
+            // Send email
+            \Mail::to($request->email)->send(new \App\Mail\InvoicePaymentMail($invoice, $paymentUrl));
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Invoice sent successfully to ' . $request->email,
+                'payment_url' => $paymentUrl,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to send invoice email: ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'error' => 'Failed to send email. Please try again later.',
+            ], 500);
+        }
     }
 }

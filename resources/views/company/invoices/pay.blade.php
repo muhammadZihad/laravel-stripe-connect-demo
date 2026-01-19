@@ -2,6 +2,15 @@
 
 @section('title', 'Pay Invoice')
 
+@push('styles')
+<style>
+    button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+</style>
+@endpush
+
 @section('content')
 <div class="py-12">
     <div class="max-w-4xl mx-auto sm:px-6 lg:px-8">
@@ -18,17 +27,15 @@
             </div>
         </div>
 
-        @if(session('success'))
-            <div class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-6">
-                {{ session('success') }}
-            </div>
-        @endif
+        <!-- Error Message -->
+        <div id="errorMessage" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
+            <span id="errorText"></span>
+        </div>
 
-        @if(session('error'))
-            <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
-                {{ session('error') }}
-            </div>
-        @endif
+        <!-- Success Message -->
+        <div id="successMessage" class="hidden bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-6">
+            <span id="successText">Payment processed successfully! Redirecting...</span>
+        </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <!-- Payment Form -->
@@ -39,9 +46,7 @@
                     </div>
                     
                     @if($paymentMethods->count() > 0)
-                        <form action="{{ route('company.invoices.pay', $invoice) }}" method="POST" class="p-6">
-                            @csrf
-                            
+                        <div id="paymentForm" class="p-6">
                             <div class="space-y-4">
                                 @foreach($paymentMethods as $paymentMethod)
                                     <div class="relative">
@@ -103,20 +108,22 @@
                                 @endforeach
                             </div>
 
-                            @error('payment_method_id')
-                                <p class="mt-2 text-sm text-red-600">{{ $message }}</p>
-                            @enderror
-
                             <!-- Submit Button -->
                             <div class="mt-6 flex justify-end space-x-3">
                                 <a href="{{ route('company.invoices.show', $invoice) }}" class="bg-gray-300 hover:bg-gray-400 text-gray-800 px-4 py-2 rounded-md text-sm font-medium">
                                     Cancel
                                 </a>
-                                <button type="submit" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium">
+                                <button type="button" id="payButton" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium">
                                     💳 Pay ${{ number_format($invoice->total_amount, 2) }}
                                 </button>
                             </div>
-                        </form>
+                        </div>
+
+                        <!-- Loading Indicator -->
+                        <div id="loadingIndicator" class="hidden p-6 text-center">
+                            <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
+                            <p class="mt-4 text-gray-600">Processing payment...</p>
+                        </div>
                     @else
                         <div class="p-6 text-center">
                             <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -217,4 +224,124 @@
         </div>
     </div>
 </div>
-@endsection 
+@endsection
+
+@push('scripts')
+<script src="https://js.stripe.com/v3/"></script>
+<script>
+    const stripe = Stripe('{{ $stripeKey }}');
+    const invoiceId = {{ $invoice->id }};
+
+    document.getElementById('payButton')?.addEventListener('click', async function(e) {
+        e.preventDefault();
+        
+        const selectedPaymentMethod = document.querySelector('input[name="payment_method_id"]:checked');
+        if (!selectedPaymentMethod) {
+            showError('Please select a payment method.');
+            return;
+        }
+
+        showLoading();
+        hideMessages();
+
+        try {
+            const response = await fetch('{{ route("company.invoices.pay.process", $invoice) }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({
+                    payment_method_id: selectedPaymentMethod.value
+                })
+            });
+
+            const result = await response.json();
+
+            if (!result.success && !result.requires_action) {
+                throw new Error(result.error || 'Payment failed');
+            }
+
+            // Check if 3DS authentication is required
+            if (result.requires_action) {
+                // Handle 3DS authentication
+                const { error: actionError, paymentIntent } = await stripe.handleNextAction({
+                    clientSecret: result.payment_intent_client_secret
+                });
+
+                if (actionError) {
+                    throw new Error(actionError.message);
+                }
+
+                // Check if payment succeeded after 3DS
+                if (paymentIntent.status === 'succeeded') {
+                    // Confirm payment completion with backend
+                    const confirmResponse = await fetch('{{ route("company.invoices.pay.confirm", $invoice) }}', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                            'Accept': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            payment_intent_id: result.payment_intent_id
+                        })
+                    });
+
+                    const confirmResult = await confirmResponse.json();
+                    
+                    if (confirmResult.success) {
+                        showSuccess();
+                        setTimeout(() => {
+                            window.location.href = confirmResult.redirect_url;
+                        }, 1500);
+                        return;
+                    } else {
+                        throw new Error(confirmResult.error || 'Payment confirmation failed');
+                    }
+                } else if (paymentIntent.status === 'requires_payment_method') {
+                    throw new Error('Payment failed. Please try a different card.');
+                } else {
+                    throw new Error('Payment could not be completed. Status: ' + paymentIntent.status);
+                }
+            }
+
+            // Payment succeeded without 3DS
+            showSuccess();
+            setTimeout(() => {
+                window.location.href = result.redirect_url;
+            }, 1500);
+
+        } catch (error) {
+            showError(error.message);
+        }
+    });
+
+    function showLoading() {
+        document.getElementById('paymentForm')?.classList.add('hidden');
+        document.getElementById('loadingIndicator')?.classList.remove('hidden');
+    }
+
+    function hideLoading() {
+        document.getElementById('paymentForm')?.classList.remove('hidden');
+        document.getElementById('loadingIndicator')?.classList.add('hidden');
+    }
+
+    function showError(message) {
+        hideLoading();
+        document.getElementById('errorText').textContent = message;
+        document.getElementById('errorMessage').classList.remove('hidden');
+    }
+
+    function showSuccess() {
+        hideLoading();
+        document.getElementById('successMessage').classList.remove('hidden');
+    }
+
+    function hideMessages() {
+        document.getElementById('errorMessage').classList.add('hidden');
+        document.getElementById('successMessage').classList.add('hidden');
+    }
+</script>
+@endpush 

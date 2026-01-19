@@ -237,6 +237,49 @@ class SuperAdminController extends Controller
     }
 
     /**
+     * Send invoice via email
+     */
+    public function sendInvoice(Request $request, Invoice $invoice)
+    {
+        // Check if invoice is already paid
+        if ($invoice->status === 'paid') {
+            return response()->json([
+                'success' => false,
+                'error' => 'Cannot send payment link for a paid invoice.',
+            ], 400);
+        }
+
+        $request->validate([
+            'email' => 'required|email',
+        ]);
+
+        // Generate or regenerate payment token
+        $token = $invoice->generatePaymentToken();
+        $paymentUrl = $invoice->getPaymentUrl();
+
+        // Update payment email
+        $invoice->update(['payment_email' => $request->email]);
+
+        try {
+            // Send email
+            \Mail::to($request->email)->send(new \App\Mail\InvoicePaymentMail($invoice, $paymentUrl));
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Invoice sent successfully to ' . $request->email,
+                'payment_url' => $paymentUrl,
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to send invoice email: ' . $e->getMessage());
+            
+            return response()->json([
+                'success' => false,
+                'error' => 'Failed to send email. Please try again later.',
+            ], 500);
+        }
+    }
+
+    /**
      * Transactions
      */
     public function transactions()
@@ -342,5 +385,75 @@ class SuperAdminController extends Controller
     public function settings()
     {
         return view('super_admin.settings');
+    }
+
+    /**
+     * View pending transactions (including those awaiting 3DS)
+     */
+    public function pendingTransactions()
+    {
+        $pendingTransactions = Transaction::where('status', 'pending')
+            ->with(['invoice', 'company', 'agent'])
+            ->orderBy('created_at', 'desc')
+            ->paginate(50);
+
+        return view('super_admin.pending_transactions', compact('pendingTransactions'));
+    }
+
+    /**
+     * Reconcile pending transactions with Stripe
+     */
+    public function reconcilePendingTransactions(Request $request)
+    {
+        $olderThanMinutes = $request->input('older_than_minutes', 10);
+        
+        $result = $this->stripeService->reconcilePendingTransactions($olderThanMinutes);
+        
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Reconciliation completed successfully.',
+                'checked' => $result['checked'],
+                'reconciled' => $result['reconciled'],
+                'failed' => $result['failed'],
+            ]);
+        }
+        
+        return response()->json([
+            'success' => false,
+            'error' => 'Reconciliation failed',
+        ], 500);
+    }
+
+    /**
+     * Check specific transaction status with Stripe
+     */
+    public function checkTransactionStatus(Transaction $transaction)
+    {
+        if (!$transaction->stripe_payment_intent_id) {
+            return response()->json([
+                'success' => false,
+                'error' => 'No payment intent associated with this transaction',
+            ], 400);
+        }
+
+        try {
+            $paymentIntent = \Stripe\PaymentIntent::retrieve($transaction->stripe_payment_intent_id);
+            
+            return response()->json([
+                'success' => true,
+                'transaction_id' => $transaction->id,
+                'payment_intent_id' => $paymentIntent->id,
+                'payment_intent_status' => $paymentIntent->status,
+                'local_status' => $transaction->status,
+                'requires_action' => $paymentIntent->status === 'requires_action',
+                'next_action' => $paymentIntent->next_action,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Failed to retrieve payment intent: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 }

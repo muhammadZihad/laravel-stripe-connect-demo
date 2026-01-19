@@ -166,55 +166,140 @@ class StripeService
     public function createPaymentIntent(Invoice $invoice, PaymentMethod $paymentMethod, float $adminCommission = 2.00): array
     {
         try {
-            // Get agent user for Connect account validation
+            // Get agent user for Connect account
             $agentUser = $invoice->agent->user;
+            $agentConnectAccountId = $agentUser->stripe_connect_account_id;
             
-            // Check if agent has completed Stripe Connect onboarding
-            if (!$agentUser->stripe_connect_account_id) {
-                return [
-                    'success' => false,
-                    'error' => 'Agent has not completed Stripe Connect onboarding. Please contact the agent to complete their account setup.',
-                ];
-            }
-
-            // Verify agent's onboarding status
-            $onboardingCheck = $this->checkOnboardingStatus($agentUser);
-            if (!$onboardingCheck['success'] || !$onboardingCheck['onboarding_complete']) {
-                return [
-                    'success' => false,
-                    'error' => 'Agent\'s Stripe Connect account is not fully set up. Please ask the agent to complete their onboarding process.',
-                ];
-            }
+            // Get company user for Connect account
+            $companyUser = $paymentMethod->user;
+            $companyConnectAccountId = $companyUser->stripe_connect_account_id;
 
             // Calculate amounts
             $totalAmount = $invoice->total_amount * 100; // Convert to cents
-            
-            // Calculate application fee: 10% of total but between $1-$4
-            $applicationFeeFloat = $invoice->total_amount * 0.1; // 10% of total
-            $applicationFeeFloat = max(1.00, min(4.00, $applicationFeeFloat)); // Constrain between $1-$4
-            $adminCommissionCents = round($applicationFeeFloat * 100); // Convert to cents
+            $adminCommissionCents = 1000; // Convert to cents
+            $totalPayableAmount = $totalAmount + $adminCommissionCents;
+            $totalStripeChargeAmount = (($totalPayableAmount + 30) / (1 - 0.029)) - $totalPayableAmount;
 
-            $paymentIntent = PaymentIntent::create([
-                'amount' => $totalAmount,
+            $totalPayableAmount += $totalStripeChargeAmount;
+
+            $amounts = [
+                'payable_amount_cents' => intval($totalPayableAmount),
+                'stripe_charge_cents' => intval($totalStripeChargeAmount),
+                'platform_fee_cents' => intval($adminCommissionCents),
+                'payable_amount' => $totalPayableAmount / 100,
+                'stripe_charge' => $totalStripeChargeAmount / 100,
+                'platform_fee' => $adminCommissionCents / 100,
+            ];
+
+            $customerId = $this->getOrCreateCustomer($companyUser);
+            $paymentMethodId = $paymentMethod->stripe_payment_method_id;
+
+            // Create a transfer group to link payment and transfer together
+            $transferGroup = 'invoice_' . $invoice->id;
+
+            // Prepare PaymentIntent parameters
+            $paymentIntentParams = [
+                'amount' => $amounts['payable_amount_cents'],
                 'currency' => 'usd',
-                'customer' => $this->getOrCreateCustomer($paymentMethod->user),
-                'payment_method' => $paymentMethod->stripe_payment_method_id,
+                'customer' => $customerId,
+                'payment_method' => $paymentMethodId,
                 'confirm' => true,
-                'automatic_payment_methods' => [
-                    'enabled' => true,
-                    'allow_redirects' => 'never',
-                ],
-                'transfer_data' => [
-                    'destination' => $agentUser->stripe_connect_account_id,
-                ],
-                'application_fee_amount' => $adminCommissionCents,
+                'transfer_group' => $transferGroup, // Group transactions by invoice
                 'metadata' => [
                     'invoice_id' => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
                     'company_id' => $invoice->company_id,
                     'agent_id' => $invoice->agent_id,
-                    'admin_commission' => $applicationFeeFloat,
+                    'admin_commission' => $amounts['platform_fee'],
+                    'transfer_amount' => $invoice->total_amount,
                 ],
-            ]);
+            ];
+
+            // Handle ACH payments (us_bank_account) - requires mandate
+            if ($paymentMethod->type === 'us_bank_account') {
+                $paymentIntentParams['payment_method_types'] = ['us_bank_account'];
+                $paymentIntentParams['mandate_data'] = [
+                    'customer_acceptance' => [
+                        'type' => 'online',
+                        'online' => [
+                            'ip_address' => request()->ip(),
+                            'user_agent' => request()->userAgent(),
+                        ],
+                    ],
+                ];
+            } else {
+                // For card payments, use automatic payment methods
+                $paymentIntentParams['automatic_payment_methods'] = [
+                    'enabled' => true,
+                    'allow_redirects' => 'never',
+                ];
+            }
+
+            // Step 1: Create PaymentIntent on platform account
+            $paymentIntent = PaymentIntent::create($paymentIntentParams);
+
+            // Initialize transfer ID variable
+            $transferId = null;
+
+            // Step 2: If payment succeeded, create separate transfer to agent
+            if ($paymentIntent->status === 'succeeded') {
+                try {
+                    // Transfer only the invoice amount (excluding platform fee) to the agent
+                    $transfer = Transfer::create([
+                        'amount' => intval($invoice->total_amount * 100),
+                        'currency' => 'usd',
+                        'destination' => $agentConnectAccountId,
+                        'transfer_group' => $transferGroup, // Same group as PaymentIntent
+                        'metadata' => [
+                            'invoice_id' => $invoice->id,
+                            'invoice_number' => $invoice->invoice_number,
+                            'company_id' => $invoice->company_id,
+                            'agent_id' => $invoice->agent_id,
+                            'payment_intent_id' => $paymentIntent->id,
+                        ],
+                    ]);
+                    
+                    $transferId = $transfer->id;
+                    
+                    Log::info('Transfer created successfully', [
+                        'transfer_id' => $transfer->id,
+                        'payment_intent_id' => $paymentIntent->id,
+                        'amount' => $invoice->total_amount,
+                        'invoice_id' => $invoice->id,
+                        'destination' => $agentConnectAccountId,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Transfer creation failed: ' . $e->getMessage(), [
+                        'payment_intent_id' => $paymentIntent->id,
+                        'invoice_id' => $invoice->id,
+                        'agent_connect_account_id' => $agentConnectAccountId,
+                    ]);
+                    
+                    // Create transaction record with transfer_failed status
+                    $transaction = Transaction::create([
+                        'transaction_id' => Transaction::generateTransactionId(),
+                        'invoice_id' => $invoice->id,
+                        'company_id' => $invoice->company_id,
+                        'agent_id' => $invoice->agent_id,
+                        'amount' => $invoice->total_amount,
+                        'admin_commission' => $amounts['platform_fee'],
+                        'net_amount' => $invoice->total_amount,
+                        'type' => 'payment',
+                        'status' => 'transfer_failed',
+                        'stripe_payment_intent_id' => $paymentIntent->id,
+                        'payment_method_type' => $paymentMethod->type,
+                        'stripe_metadata' => json_encode($paymentIntent->metadata->toArray()),
+                        'notes' => 'Payment succeeded but transfer failed: ' . $e->getMessage(),
+                    ]);
+                    
+                    return [
+                        'success' => false,
+                        'error' => 'Payment succeeded but transfer to agent failed. Support has been notified.',
+                        'payment_intent' => $paymentIntent,
+                        'transaction' => $transaction,
+                    ];
+                }
+            }
 
             // Create transaction record
             $transaction = Transaction::create([
@@ -223,11 +308,12 @@ class StripeService
                 'company_id' => $invoice->company_id,
                 'agent_id' => $invoice->agent_id,
                 'amount' => $invoice->total_amount,
-                'admin_commission' => $applicationFeeFloat,
-                'net_amount' => $invoice->total_amount - $applicationFeeFloat,
+                'admin_commission' => $amounts['platform_fee'],
+                'net_amount' => $invoice->total_amount,
                 'type' => 'payment',
                 'status' => $paymentIntent->status === 'succeeded' ? 'completed' : 'pending',
                 'stripe_payment_intent_id' => $paymentIntent->id,
+                'stripe_transfer_id' => $transferId,
                 'payment_method_type' => $paymentMethod->type,
                 'stripe_metadata' => json_encode($paymentIntent->metadata->toArray()),
             ]);
@@ -243,7 +329,7 @@ class StripeService
                 'transaction' => $transaction,
             ];
         } catch (\Exception $e) {
-            Log::error('Payment intent creation failed: ' . $e->getMessage());
+            Log::error('Charge creation failed: ' . $e->getMessage());
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -1112,6 +1198,21 @@ class StripeService
                 case 'payment_intent.payment_failed':
                     $this->handlePaymentFailed($event['data']['object']);
                     break;
+                case 'payment_intent.canceled':
+                    $this->handlePaymentCanceled($event['data']['object']);
+                    break;
+                case 'payment_intent.requires_action':
+                    $this->handlePaymentRequiresAction($event['data']['object']);
+                    break;
+                case 'transfer.created':
+                    $this->handleTransferCreated($event['data']['object']);
+                    break;
+                case 'transfer.failed':
+                    $this->handleTransferFailed($event['data']['object']);
+                    break;
+                case 'transfer.reversed':
+                    $this->handleTransferReversed($event['data']['object']);
+                    break;
                 case 'account.updated':
                     $this->handleAccountUpdated($event['data']['object']);
                     break;
@@ -1138,6 +1239,57 @@ class StripeService
     {
         $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent['id'])->first();
         if ($transaction) {
+            // Check if transfer was already created (shouldn't complete without transfer)
+            if (!$transaction->stripe_transfer_id && $transaction->status === 'pending') {
+                // This is a 3DS payment that succeeded but hasn't been transferred yet
+                Log::info('3DS payment succeeded via webhook, creating transfer', [
+                    'payment_intent_id' => $paymentIntent['id'],
+                    'transaction_id' => $transaction->id,
+                    'invoice_id' => $transaction->invoice_id,
+                ]);
+
+                try {
+                    $invoice = $transaction->invoice;
+                    $agentUser = $invoice->agent->user;
+                    $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+                    $transferGroup = 'invoice_' . $invoice->id;
+
+                    // Create transfer to agent
+                    $transfer = Transfer::create([
+                        'amount' => intval($invoice->total_amount * 100),
+                        'currency' => 'usd',
+                        'destination' => $agentConnectAccountId,
+                        'transfer_group' => $transferGroup,
+                        'metadata' => [
+                            'invoice_id' => $invoice->id,
+                            'invoice_number' => $invoice->invoice_number,
+                            'company_id' => $invoice->company_id,
+                            'agent_id' => $invoice->agent_id,
+                            'payment_intent_id' => $paymentIntent['id'],
+                            'completed_via' => 'webhook_3ds',
+                        ],
+                    ]);
+
+                    $transaction->update(['stripe_transfer_id' => $transfer->id]);
+
+                    Log::info('3DS payment transfer created successfully via webhook', [
+                        'transfer_id' => $transfer->id,
+                        'payment_intent_id' => $paymentIntent['id'],
+                        'transaction_id' => $transaction->id,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Webhook transfer creation failed for 3DS payment: ' . $e->getMessage(), [
+                        'payment_intent_id' => $paymentIntent['id'],
+                        'transaction_id' => $transaction->id,
+                        'invoice_id' => $transaction->invoice_id,
+                    ]);
+
+                    $transaction->markAsTransferFailed('Webhook transfer failed: ' . $e->getMessage());
+                    return;
+                }
+            }
+
+            // Mark transaction as completed
             $transaction->markAsCompleted();
             $transaction->invoice->markAsPaid();
         }
@@ -1147,7 +1299,92 @@ class StripeService
     {
         $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent['id'])->first();
         if ($transaction) {
-            $transaction->markAsFailed('Payment failed');
+            $failureMessage = $paymentIntent['last_payment_error']['message'] ?? 'Payment failed';
+            $failureCode = $paymentIntent['last_payment_error']['code'] ?? 'unknown';
+            
+            Log::warning('Payment failed via webhook', [
+                'payment_intent_id' => $paymentIntent['id'],
+                'transaction_id' => $transaction->id,
+                'failure_code' => $failureCode,
+                'failure_message' => $failureMessage,
+            ]);
+            
+            $transaction->markAsFailed($failureCode . ': ' . $failureMessage);
+        }
+    }
+
+    private function handleTransferCreated(array $transfer): void
+    {
+        Log::info('Transfer created webhook received', [
+            'transfer_id' => $transfer['id'],
+            'amount' => $transfer['amount'],
+            'destination' => $transfer['destination'],
+        ]);
+
+        // Update transaction with transfer information
+        $invoiceId = $transfer['metadata']['invoice_id'] ?? null;
+        if ($invoiceId) {
+            $transaction = Transaction::where('invoice_id', $invoiceId)
+                ->where('stripe_payment_intent_id', $transfer['metadata']['payment_intent_id'] ?? null)
+                ->first();
+            
+            if ($transaction && !$transaction->stripe_transfer_id) {
+                $transaction->update([
+                    'stripe_transfer_id' => $transfer['id'],
+                ]);
+                
+                Log::info('Transaction updated with transfer ID', [
+                    'transaction_id' => $transaction->id,
+                    'transfer_id' => $transfer['id'],
+                ]);
+            }
+        }
+    }
+
+    private function handleTransferFailed(array $transfer): void
+    {
+        Log::error('Transfer failed webhook received', [
+            'transfer_id' => $transfer['id'],
+            'failure_code' => $transfer['failure_code'] ?? 'unknown',
+            'failure_message' => $transfer['failure_message'] ?? 'No message provided',
+        ]);
+
+        $transaction = Transaction::where('stripe_transfer_id', $transfer['id'])->first();
+        if ($transaction) {
+            $failureReason = ($transfer['failure_code'] ?? 'unknown') . ': ' . ($transfer['failure_message'] ?? 'Transfer failed');
+            $transaction->markAsTransferFailed($failureReason);
+            
+            Log::warning('Transaction marked as transfer_failed', [
+                'transaction_id' => $transaction->id,
+                'invoice_id' => $transaction->invoice_id,
+                'reason' => $failureReason,
+            ]);
+        }
+    }
+
+    private function handleTransferReversed(array $transfer): void
+    {
+        Log::warning('Transfer reversed webhook received', [
+            'transfer_id' => $transfer['id'],
+            'amount' => $transfer['amount'],
+        ]);
+
+        $transaction = Transaction::where('stripe_transfer_id', $transfer['id'])->first();
+        if ($transaction) {
+            $transaction->update([
+                'status' => 'transfer_failed',
+                'notes' => 'Transfer was reversed',
+            ]);
+            
+            // Also update invoice status back to pending
+            if ($transaction->invoice) {
+                $transaction->invoice->update(['status' => 'pending']);
+            }
+            
+            Log::warning('Transaction and invoice updated due to transfer reversal', [
+                'transaction_id' => $transaction->id,
+                'invoice_id' => $transaction->invoice_id,
+            ]);
         }
     }
 
@@ -1235,6 +1472,513 @@ class StripeService
                 'user_id' => $paymentMethod->user_id,
                 'session_id' => $session['id'],
             ]);
+        }
+    }
+
+    private function handlePaymentCanceled(array $paymentIntent): void
+    {
+        $transaction = Transaction::where('stripe_payment_intent_id', $paymentIntent['id'])->first();
+        if ($transaction && $transaction->isPending()) {
+            Log::info('Payment intent canceled via webhook', [
+                'payment_intent_id' => $paymentIntent['id'],
+                'transaction_id' => $transaction->id,
+            ]);
+            
+            $transaction->markAsFailed('Payment was canceled');
+        }
+    }
+
+    private function handlePaymentRequiresAction(array $paymentIntent): void
+    {
+        Log::info('Payment requires action (3DS authentication)', [
+            'payment_intent_id' => $paymentIntent['id'],
+            'next_action_type' => $paymentIntent['next_action']['type'] ?? 'unknown',
+        ]);
+        
+        // Transaction should already be in pending status
+        // This webhook is mainly for logging/monitoring
+    }
+
+    /**
+     * Reconcile pending transactions by checking their status with Stripe
+     * This method can be called by a scheduled job to handle abandoned 3DS flows
+     */
+    public function reconcilePendingTransactions(int $olderThanMinutes = 10): array
+    {
+        $reconciled = [];
+        $failed = [];
+        
+        // Get pending transactions older than specified minutes
+        $pendingTransactions = Transaction::where('status', 'pending')
+            ->where('created_at', '<', now()->subMinutes($olderThanMinutes))
+            ->get();
+
+        foreach ($pendingTransactions as $transaction) {
+            try {
+                if (!$transaction->stripe_payment_intent_id) {
+                    continue;
+                }
+
+                // Retrieve the current status from Stripe
+                $paymentIntent = PaymentIntent::retrieve($transaction->stripe_payment_intent_id);
+
+                Log::info('Reconciling pending transaction', [
+                    'transaction_id' => $transaction->id,
+                    'payment_intent_id' => $paymentIntent->id,
+                    'payment_intent_status' => $paymentIntent->status,
+                    'invoice_id' => $transaction->invoice_id,
+                ]);
+
+                switch ($paymentIntent->status) {
+                    case 'succeeded':
+                        // Payment succeeded but wasn't properly processed
+                        if (!$transaction->stripe_transfer_id) {
+                            // Need to create transfer
+                            $invoice = $transaction->invoice;
+                            $agentUser = $invoice->agent->user;
+                            $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+                            $transferGroup = 'invoice_' . $invoice->id;
+
+                            try {
+                                $transfer = Transfer::create([
+                                    'amount' => intval($invoice->total_amount * 100),
+                                    'currency' => 'usd',
+                                    'destination' => $agentConnectAccountId,
+                                    'transfer_group' => $transferGroup,
+                                    'metadata' => [
+                                        'invoice_id' => $invoice->id,
+                                        'invoice_number' => $invoice->invoice_number,
+                                        'company_id' => $invoice->company_id,
+                                        'agent_id' => $invoice->agent_id,
+                                        'payment_intent_id' => $paymentIntent->id,
+                                        'completed_via' => 'reconciliation',
+                                    ],
+                                ]);
+
+                                $transaction->update(['stripe_transfer_id' => $transfer->id]);
+
+                                Log::info('Transfer created during reconciliation', [
+                                    'transfer_id' => $transfer->id,
+                                    'transaction_id' => $transaction->id,
+                                ]);
+                            } catch (\Exception $e) {
+                                Log::error('Reconciliation transfer failed: ' . $e->getMessage(), [
+                                    'transaction_id' => $transaction->id,
+                                ]);
+                                
+                                $transaction->markAsTransferFailed('Reconciliation transfer failed: ' . $e->getMessage());
+                                $failed[] = [
+                                    'transaction_id' => $transaction->id,
+                                    'error' => 'Transfer failed: ' . $e->getMessage(),
+                                ];
+                                continue;
+                            }
+                        }
+
+                        $transaction->markAsCompleted();
+                        $transaction->invoice->markAsPaid();
+                        
+                        $reconciled[] = [
+                            'transaction_id' => $transaction->id,
+                            'status' => 'completed',
+                            'payment_intent_id' => $paymentIntent->id,
+                        ];
+                        break;
+
+                    case 'requires_action':
+                        // Still waiting for 3DS authentication
+                        Log::info('Transaction still requires action', [
+                            'transaction_id' => $transaction->id,
+                            'payment_intent_id' => $paymentIntent->id,
+                        ]);
+                        break;
+
+                    case 'canceled':
+                    case 'requires_payment_method':
+                        // Payment failed or was canceled
+                        $transaction->markAsFailed('Payment ' . $paymentIntent->status);
+                        
+                        $reconciled[] = [
+                            'transaction_id' => $transaction->id,
+                            'status' => 'failed',
+                            'reason' => $paymentIntent->status,
+                        ];
+                        break;
+
+                    case 'processing':
+                        // Payment is still processing (common for ACH)
+                        Log::info('Transaction still processing', [
+                            'transaction_id' => $transaction->id,
+                            'payment_intent_id' => $paymentIntent->id,
+                        ]);
+                        break;
+
+                    default:
+                        Log::warning('Unknown payment intent status during reconciliation', [
+                            'transaction_id' => $transaction->id,
+                            'payment_intent_id' => $paymentIntent->id,
+                            'status' => $paymentIntent->status,
+                        ]);
+                        break;
+                }
+            } catch (\Exception $e) {
+                Log::error('Reconciliation failed for transaction: ' . $e->getMessage(), [
+                    'transaction_id' => $transaction->id,
+                ]);
+                
+                $failed[] = [
+                    'transaction_id' => $transaction->id,
+                    'error' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return [
+            'success' => true,
+            'checked' => $pendingTransactions->count(),
+            'reconciled' => $reconciled,
+            'failed' => $failed,
+        ];
+    }
+
+    /**
+     * Create payment intent for guest/public invoice payment (not tied to a user)
+     */
+    public function createGuestPaymentIntent(Invoice $invoice, string $stripePaymentMethodId, ?string $customerId = null, float $adminCommission = 2.00): array
+    {
+        try {
+            // Get agent user for Connect account
+            $agentUser = $invoice->agent->user;
+            $agentConnectAccountId = $agentUser->stripe_connect_account_id;
+
+            // Calculate amounts
+            $totalAmount = $invoice->total_amount * 100; // Convert to cents
+            $adminCommissionCents = 1000; // Convert to cents
+            $totalPayableAmount = $totalAmount + $adminCommissionCents;
+            $totalStripeChargeAmount = (($totalPayableAmount + 30) / (1 - 0.029)) - $totalPayableAmount;
+
+            $totalPayableAmount += $totalStripeChargeAmount;
+
+            $amounts = [
+                'payable_amount_cents' => intval($totalPayableAmount),
+                'stripe_charge_cents' => intval($totalStripeChargeAmount),
+                'platform_fee_cents' => intval($adminCommissionCents),
+                'payable_amount' => $totalPayableAmount / 100,
+                'stripe_charge' => $totalStripeChargeAmount / 100,
+                'platform_fee' => $adminCommissionCents / 100,
+            ];
+
+            // Create a transfer group to link payment and transfer together
+            $transferGroup = 'invoice_' . $invoice->id;
+
+            // Retrieve payment method to check type
+            $stripePaymentMethod = StripePaymentMethod::retrieve($stripePaymentMethodId);
+            
+            // For ACH payments, create customer if not provided (required by Stripe)
+            if ($stripePaymentMethod->type === 'us_bank_account' && !$customerId) {
+                $customer = Customer::create([
+                    'email' => $invoice->payment_email ?? $invoice->agent->user->email,
+                    'name' => 'Guest Payment',
+                    'metadata' => [
+                        'invoice_id' => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'payment_type' => 'guest',
+                        'temporary' => 'true',
+                    ],
+                ]);
+                $customerId = $customer->id;
+                
+                // Attach payment method to customer for ACH
+                $stripePaymentMethod->attach(['customer' => $customerId]);
+            }
+            
+            // Prepare PaymentIntent parameters
+            $paymentIntentParams = [
+                'amount' => $amounts['payable_amount_cents'],
+                'currency' => 'usd',
+                'payment_method' => $stripePaymentMethodId,
+                'confirm' => true,
+                'transfer_group' => $transferGroup,
+                'metadata' => [
+                    'invoice_id' => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
+                    'company_id' => $invoice->company_id,
+                    'agent_id' => $invoice->agent_id,
+                    'admin_commission' => $amounts['platform_fee'],
+                    'transfer_amount' => $invoice->total_amount,
+                    'payment_type' => 'guest',
+                ],
+            ];
+
+            // Add customer if we have one
+            if ($customerId) {
+                $paymentIntentParams['customer'] = $customerId;
+            }
+
+            // Handle ACH payments - requires mandate
+            if ($stripePaymentMethod->type === 'us_bank_account') {
+                $paymentIntentParams['payment_method_types'] = ['us_bank_account'];
+                $paymentIntentParams['mandate_data'] = [
+                    'customer_acceptance' => [
+                        'type' => 'online',
+                        'online' => [
+                            'ip_address' => request()->ip(),
+                            'user_agent' => request()->userAgent(),
+                        ],
+                    ],
+                ];
+            } else {
+                // For card payments
+                $paymentIntentParams['automatic_payment_methods'] = [
+                    'enabled' => true,
+                    'allow_redirects' => 'never',
+                ];
+            }
+
+            // Create PaymentIntent
+            $paymentIntent = PaymentIntent::create($paymentIntentParams);
+
+            // Initialize transfer ID variable
+            $transferId = null;
+
+            // If payment succeeded, create transfer to agent
+            if ($paymentIntent->status === 'succeeded') {
+                try {
+                    $transfer = Transfer::create([
+                        'amount' => intval($invoice->total_amount * 100),
+                        'currency' => 'usd',
+                        'destination' => $agentConnectAccountId,
+                        'transfer_group' => $transferGroup,
+                        'metadata' => [
+                            'invoice_id' => $invoice->id,
+                            'invoice_number' => $invoice->invoice_number,
+                            'company_id' => $invoice->company_id,
+                            'agent_id' => $invoice->agent_id,
+                            'payment_intent_id' => $paymentIntent->id,
+                            'payment_type' => 'guest',
+                        ],
+                    ]);
+                    
+                    $transferId = $transfer->id;
+                    
+                    Log::info('Guest payment transfer created successfully', [
+                        'transfer_id' => $transfer->id,
+                        'payment_intent_id' => $paymentIntent->id,
+                        'invoice_id' => $invoice->id,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Guest payment transfer failed: ' . $e->getMessage(), [
+                        'payment_intent_id' => $paymentIntent->id,
+                        'invoice_id' => $invoice->id,
+                    ]);
+                    
+                    // Create transaction with transfer_failed status
+                    $transaction = Transaction::create([
+                        'transaction_id' => Transaction::generateTransactionId(),
+                        'invoice_id' => $invoice->id,
+                        'company_id' => $invoice->company_id,
+                        'agent_id' => $invoice->agent_id,
+                        'amount' => $invoice->total_amount,
+                        'admin_commission' => $amounts['platform_fee'],
+                        'net_amount' => $invoice->total_amount,
+                        'type' => 'payment',
+                        'status' => 'transfer_failed',
+                        'stripe_payment_intent_id' => $paymentIntent->id,
+                        'payment_method_type' => $stripePaymentMethod->type,
+                        'stripe_metadata' => json_encode(array_merge(
+                            $paymentIntent->metadata->toArray(),
+                            ['payment_type' => 'guest']
+                        )),
+                        'notes' => 'Guest payment succeeded but transfer failed: ' . $e->getMessage(),
+                    ]);
+                    
+                    return [
+                        'success' => false,
+                        'error' => 'Payment succeeded but transfer to agent failed. Support has been notified.',
+                        'payment_intent' => $paymentIntent,
+                        'transaction' => $transaction,
+                    ];
+                }
+            }
+
+            // Create transaction record
+            $transaction = Transaction::create([
+                'transaction_id' => Transaction::generateTransactionId(),
+                'invoice_id' => $invoice->id,
+                'company_id' => $invoice->company_id,
+                'agent_id' => $invoice->agent_id,
+                'amount' => $invoice->total_amount,
+                'admin_commission' => $amounts['platform_fee'],
+                'net_amount' => $invoice->total_amount,
+                'type' => 'payment',
+                'status' => $paymentIntent->status === 'succeeded' ? 'completed' : 'pending',
+                'stripe_payment_intent_id' => $paymentIntent->id,
+                'stripe_transfer_id' => $transferId,
+                'payment_method_type' => $stripePaymentMethod->type,
+                'stripe_metadata' => json_encode(array_merge(
+                    $paymentIntent->metadata->toArray(),
+                    ['payment_type' => 'guest']
+                )),
+            ]);
+
+            if ($paymentIntent->status === 'succeeded') {
+                $invoice->markAsPaid();
+                $transaction->markAsCompleted();
+            }
+
+            Log::info('Guest payment processed successfully', [
+                'payment_intent_id' => $paymentIntent->id,
+                'invoice_id' => $invoice->id,
+                'transaction_id' => $transaction->id,
+            ]);
+
+            return [
+                'success' => true,
+                'payment_intent' => $paymentIntent,
+                'transaction' => $transaction,
+            ];
+        } catch (\Exception $e) {
+            Log::error('Guest payment failed: ' . $e->getMessage(), [
+                'invoice_id' => $invoice->id,
+            ]);
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Create a guest Financial Connections session for one-time payment (not tied to a user)
+     */
+    public function createGuestFinancialConnectionsSession(Invoice $invoice): array
+    {
+        try {
+            // Create a temporary Stripe customer for this payment only
+            $customer = Customer::create([
+                'email' => $invoice->payment_email ?? $invoice->agent->user->email,
+                'name' => 'Guest Payment',
+                'metadata' => [
+                    'invoice_id' => $invoice->id,
+                    'invoice_number' => $invoice->invoice_number,
+                    'payment_type' => 'guest',
+                    'temporary' => 'true',
+                ],
+            ]);
+
+            // Create Financial Connections session for guest
+            $session = FinancialConnectionsSession::create([
+                'account_holder' => [
+                    'type' => 'customer',
+                    'customer' => $customer->id,
+                ],
+                'permissions' => ['payment_method'],
+                'filters' => [
+                    'countries' => ['US'],
+                ],
+            ]);
+
+            Log::info('Guest Financial Connections session created', [
+                'session_id' => $session->id,
+                'customer_id' => $customer->id,
+                'invoice_id' => $invoice->id,
+            ]);
+
+            return [
+                'success' => true,
+                'session' => $session,
+                'client_secret' => $session->client_secret,
+                'customer_id' => $customer->id,
+                'message' => 'Financial Connections session created. Please connect your bank account.',
+            ];
+        } catch (\Exception $e) {
+            Log::error('Guest Financial Connections session creation failed: ' . $e->getMessage());
+            return [
+                'success' => false,
+                'error' => 'Failed to create bank connection session: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Complete guest Financial Connections session and return payment method ID
+     * This does NOT save the payment method to the database - it's for one-time use only
+     */
+    public function completeGuestFinancialConnectionsSession(string $sessionId, string $customerId, Invoice $invoice): array
+    {
+        try {
+            // Retrieve the session
+            $session = FinancialConnectionsSession::retrieve($sessionId);
+            
+            Log::info('Guest Financial Connections session retrieved', [
+                'session_id' => $sessionId,
+                'customer_id' => $customerId,
+                'invoice_id' => $invoice->id,
+                'accounts_count' => count($session->accounts->data ?? []),
+            ]);
+            
+            if (empty($session->accounts->data)) {
+                Log::warning('No accounts linked in guest Financial Connections session', [
+                    'session_id' => $sessionId,
+                    'customer_id' => $customerId,
+                    'invoice_id' => $invoice->id,
+                ]);
+                
+                return [
+                    'success' => false,
+                    'error' => 'No accounts were linked during the connection process.',
+                ];
+            }
+
+            // Get the first linked account
+            $account = $session->accounts->data[0];
+            
+            Log::info('Processing guest Financial Connections account', [
+                'account_id' => $account->id,
+                'customer_id' => $customerId,
+                'invoice_id' => $invoice->id,
+                'institution_name' => $account->institution_name,
+            ]);
+            
+            // Create payment method from the linked account
+            $stripePaymentMethod = StripePaymentMethod::create([
+                'type' => 'us_bank_account',
+                'us_bank_account' => [
+                    'financial_connections_account' => $account->id,
+                ],
+                'billing_details' => [
+                    'name' => 'Guest Payment',
+                    'email' => $invoice->payment_email ?? $invoice->agent->user->email,
+                ],
+            ]);
+
+            // Attach to temporary customer
+            $stripePaymentMethod->attach(['customer' => $customerId]);
+
+            Log::info('Guest bank account connected successfully', [
+                'payment_method_id' => $stripePaymentMethod->id,
+                'customer_id' => $customerId,
+                'invoice_id' => $invoice->id,
+                'institution_name' => $account->institution_name,
+            ]);
+
+            return [
+                'success' => true,
+                'message' => 'Bank account connected successfully!',
+                'payment_method_id' => $stripePaymentMethod->id,
+                'customer_id' => $customerId,
+            ];
+        } catch (\Exception $e) {
+            Log::error('Guest Financial Connections completion failed: ' . $e->getMessage(), [
+                'session_id' => $sessionId,
+                'customer_id' => $customerId,
+                'invoice_id' => $invoice->id,
+            ]);
+            
+            return [
+                'success' => false,
+                'error' => 'Failed to complete bank account connection: ' . $e->getMessage(),
+            ];
         }
     }
 } 
