@@ -175,6 +175,10 @@ Route::middleware(['auth', 'company'])->prefix('company')->name('company.')->gro
     Route::post('/payment-methods/check-addition-status', [CompanyController::class, 'checkFinancialConnectionsAdditionStatus'])->name('payment-methods.check-addition-status');
     Route::get('/payment-methods/add-complete', [CompanyController::class, 'completeFinancialConnectionsAddition'])->name('payment-methods.add-complete');
 
+    // Card Setup with 3DS for off-session payments
+    Route::post('/payment-methods/create-card-setup-intent', [CompanyController::class, 'createCardSetupIntent'])->name('payment-methods.create-card-setup-intent');
+    Route::post('/payment-methods/confirm-card-setup', [CompanyController::class, 'confirmCardSetup'])->name('payment-methods.confirm-card-setup');
+
     // Payment Method Verification
     Route::post('/payment-methods/{paymentMethod}/initiate-verification', [CompanyController::class, 'initiateVerification'])->name('payment-methods.initiate-verification');
     Route::get('/payment-methods/{paymentMethod}/verify', [CompanyController::class, 'showVerifyForm'])->name('payment-methods.verify');
@@ -218,6 +222,10 @@ Route::middleware(['auth', 'agent'])->prefix('agent')->name('agent.')->group(fun
     Route::post('/payment-methods/create-fc-session', [AgentController::class, 'createFinancialConnectionsSession'])->name('payment-methods.create-fc-session');
     Route::post('/payment-methods/check-addition-status', [AgentController::class, 'checkFinancialConnectionsAdditionStatus'])->name('payment-methods.check-addition-status');
     Route::get('/payment-methods/add-complete', [AgentController::class, 'completeFinancialConnectionsAddition'])->name('payment-methods.add-complete');
+
+    // Card Setup with 3DS for off-session payments
+    Route::post('/payment-methods/create-card-setup-intent', [AgentController::class, 'createCardSetupIntent'])->name('payment-methods.create-card-setup-intent');
+    Route::post('/payment-methods/confirm-card-setup', [AgentController::class, 'confirmCardSetup'])->name('payment-methods.confirm-card-setup');
 
     // Payment Method Verification
     Route::post('/payment-methods/{paymentMethod}/initiate-verification', [AgentController::class, 'initiateVerification'])->name('payment-methods.initiate-verification');

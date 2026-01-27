@@ -367,6 +367,60 @@ class CompanyController extends Controller
         ], 400);
     }
 
+    /**
+     * Create a SetupIntent for off-session card setup with 3DS
+     */
+    public function createCardSetupIntent(Request $request)
+    {
+        $user = Auth::user();
+
+        $result = $this->stripeService->createSetupIntentForOffSession($user);
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'client_secret' => $result['client_secret'],
+                'setup_intent_id' => $result['setup_intent_id'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
+    /**
+     * Confirm card setup after 3DS authentication
+     */
+    public function confirmCardSetup(Request $request)
+    {
+        $request->validate([
+            'setup_intent_id' => 'required|string|starts_with:seti_',
+            'is_default' => 'sometimes|boolean',
+        ]);
+
+        $user = Auth::user();
+        $result = $this->stripeService->completeCardSetup(
+            $user,
+            $request->setup_intent_id,
+            $request->boolean('is_default', false)
+        );
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'message' => $result['message'],
+                'payment_method' => $result['payment_method'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
     public function setDefaultPaymentMethod(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();

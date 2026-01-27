@@ -35,7 +35,7 @@ class StripeService
         try {
             // Determine business type based on user role
             $businessType = $user->isCompany() ? 'company' : 'individual';
-            
+
             // Get company or agent data for the account
             $company = $user->company;
             $agent = $user->agent;
@@ -50,7 +50,7 @@ class StripeService
                     'us_bank_account_ach_payments' => ['requested' => true],
                     'us_bank_transfer_payments' => ['requested' => true],
 
-                ],          
+                ],
                 'business_type' => $businessType,
                 'company' => $company ? [
                     'name' => $company->company_name,
@@ -132,9 +132,9 @@ class StripeService
             }
 
             $account = Account::retrieve($user->stripe_connect_account_id);
-            $onboardingComplete = $account->details_submitted && 
-                                 $account->charges_enabled && 
-                                 $account->payouts_enabled;
+            $onboardingComplete = $account->details_submitted &&
+                $account->charges_enabled &&
+                $account->payouts_enabled;
 
             // Update local status
             $user->update([
@@ -161,6 +161,128 @@ class StripeService
     }
 
     /**
+     * Create a SetupIntent for off-session card payments with 3DS authentication
+     * This ensures 3DS is triggered during card setup, not during payment
+     */
+    public function createSetupIntentForOffSession(User $user): array
+    {
+        try {
+            $customerId = $this->getOrCreateCustomer($user);
+
+            $setupIntent = SetupIntent::create([
+                'customer' => $customerId,
+                'usage' => 'off_session', // Key: enables off-session payments after setup
+                'automatic_payment_methods' => [
+                    'enabled' => true,
+                    'allow_redirects' => 'never',
+                ],
+                'metadata' => [
+                    'user_id' => $user->id,
+                    'purpose' => 'card_setup_for_off_session',
+                ],
+            ]);
+
+            Log::info('SetupIntent created for off-session card setup', [
+                'setup_intent_id' => $setupIntent->id,
+                'user_id' => $user->id,
+                'customer_id' => $customerId,
+            ]);
+
+            return [
+                'success' => true,
+                'client_secret' => $setupIntent->client_secret,
+                'setup_intent_id' => $setupIntent->id,
+            ];
+        } catch (\Exception $e) {
+            Log::error('SetupIntent creation failed: ' . $e->getMessage(), [
+                'user_id' => $user->id,
+            ]);
+
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Complete card setup after 3DS authentication and save payment method
+     */
+    public function completeCardSetup(User $user, string $setupIntentId, bool $isDefault = false): array
+    {
+        try {
+            // Retrieve the SetupIntent to get the payment method
+            $setupIntent = SetupIntent::retrieve($setupIntentId);
+
+            if ($setupIntent->status !== 'succeeded') {
+                return [
+                    'success' => false,
+                    'error' => 'Card setup was not completed. Status: ' . $setupIntent->status,
+                ];
+            }
+
+            // Get the payment method from the SetupIntent
+            $paymentMethodId = $setupIntent->payment_method;
+            $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethodId);
+
+            // The payment method is already attached to the customer via SetupIntent
+
+            // Set as default if requested or if it's the first payment method
+            $isFirstPaymentMethod = $user->paymentMethods()->count() === 0;
+            $shouldSetDefault = $isDefault || $isFirstPaymentMethod;
+
+            // If setting as default, unset other defaults
+            if ($shouldSetDefault) {
+                $user->paymentMethods()->update(['is_default' => false]);
+            }
+
+            // Store in database
+            $paymentMethod = $user->paymentMethods()->create([
+                'stripe_payment_method_id' => $stripePaymentMethod->id,
+                'type' => $stripePaymentMethod->type,
+                'brand' => $stripePaymentMethod->card->brand ?? null,
+                'last_four' => $stripePaymentMethod->card->last4 ?? null,
+                'exp_month' => $stripePaymentMethod->card->exp_month ?? null,
+                'exp_year' => $stripePaymentMethod->card->exp_year ?? null,
+                'bank_name' => null,
+                'account_holder_type' => null,
+                'is_default' => $shouldSetDefault,
+                'is_active' => true,
+                'verification_status' => 'verified', // Card verified via 3DS
+                'verified_at' => now(),
+                'stripe_metadata' => array_merge(
+                    $stripePaymentMethod->metadata->toArray(),
+                    ['setup_intent_id' => $setupIntentId, 'off_session_enabled' => true]
+                ),
+            ]);
+
+            Log::info('Card setup completed successfully with 3DS', [
+                'payment_method_id' => $paymentMethod->id,
+                'stripe_payment_method_id' => $stripePaymentMethod->id,
+                'setup_intent_id' => $setupIntentId,
+                'user_id' => $user->id,
+            ]);
+
+            return [
+                'success' => true,
+                'payment_method' => $paymentMethod,
+                'stripe_payment_method' => $stripePaymentMethod,
+                'message' => 'Card added successfully with 3D Secure verification.',
+            ];
+        } catch (\Exception $e) {
+            Log::error('Card setup completion failed: ' . $e->getMessage(), [
+                'user_id' => $user->id,
+                'setup_intent_id' => $setupIntentId,
+            ]);
+
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
      * Create payment intent for invoice
      */
     public function createPaymentIntent(Invoice $invoice, PaymentMethod $paymentMethod, float $adminCommission = 2.00): array
@@ -169,7 +291,7 @@ class StripeService
             // Get agent user for Connect account
             $agentUser = $invoice->agent->user;
             $agentConnectAccountId = $agentUser->stripe_connect_account_id;
-            
+
             // Get company user for Connect account
             $companyUser = $paymentMethod->user;
             $companyConnectAccountId = $companyUser->stripe_connect_account_id;
@@ -228,7 +350,9 @@ class StripeService
                     ],
                 ];
             } else {
-                // For card payments, use automatic payment methods
+                // For card payments, use automatic payment methods with off_session
+                // This allows charging cards that were set up with 3DS without re-authentication
+                $paymentIntentParams['off_session'] = true;
                 $paymentIntentParams['automatic_payment_methods'] = [
                     'enabled' => true,
                     'allow_redirects' => 'never',
@@ -258,9 +382,9 @@ class StripeService
                             'payment_intent_id' => $paymentIntent->id,
                         ],
                     ]);
-                    
+
                     $transferId = $transfer->id;
-                    
+
                     Log::info('Transfer created successfully', [
                         'transfer_id' => $transfer->id,
                         'payment_intent_id' => $paymentIntent->id,
@@ -274,7 +398,7 @@ class StripeService
                         'invoice_id' => $invoice->id,
                         'agent_connect_account_id' => $agentConnectAccountId,
                     ]);
-                    
+
                     // Create transaction record with transfer_failed status
                     $transaction = Transaction::create([
                         'transaction_id' => Transaction::generateTransactionId(),
@@ -291,7 +415,7 @@ class StripeService
                         'stripe_metadata' => json_encode($paymentIntent->metadata->toArray()),
                         'notes' => 'Payment succeeded but transfer failed: ' . $e->getMessage(),
                     ]);
-                    
+
                     return [
                         'success' => false,
                         'error' => 'Payment succeeded but transfer to agent failed. Support has been notified.',
@@ -344,7 +468,7 @@ class StripeService
     {
         try {
             $customer = $this->getOrCreateCustomer($user);
-            
+
             $stripePaymentMethod = StripePaymentMethod::create([
                 'type' => $paymentMethodData['type'],
                 'card' => $paymentMethodData['type'] === 'card' ? $paymentMethodData['card'] : null,
@@ -428,20 +552,20 @@ class StripeService
         try {
             // Retrieve the session
             $session = FinancialConnectionsSession::retrieve($sessionId);
-            
+
             Log::info('Financial Connections session retrieved for addition', [
                 'session_id' => $sessionId,
                 'user_id' => $user->id,
                 'accounts_count' => count($session->accounts->data ?? []),
                 'session_status' => $session->status ?? 'unknown',
             ]);
-            
+
             if (empty($session->accounts->data)) {
                 Log::warning('No accounts linked in Financial Connections session', [
                     'session_id' => $sessionId,
                     'user_id' => $user->id,
                 ]);
-                
+
                 return [
                     'success' => false,
                     'error' => 'No accounts were linked during the connection process.',
@@ -457,7 +581,7 @@ class StripeService
                     'user_id' => $user->id,
                     'institution_name' => $account->institution_name,
                 ]);
-                
+
                 // Create payment method from the linked account
                 $stripePaymentMethod = StripePaymentMethod::create([
                     'type' => 'us_bank_account',
@@ -527,8 +651,8 @@ class StripeService
                 'success' => true,
                 'payment_methods' => $addedPaymentMethods,
                 'count' => count($addedPaymentMethods),
-                'message' => count($addedPaymentMethods) === 1 
-                    ? 'Bank account added and verified successfully!' 
+                'message' => count($addedPaymentMethods) === 1
+                    ? 'Bank account added and verified successfully!'
                     : count($addedPaymentMethods) . ' bank accounts added and verified successfully!',
             ];
         } catch (\Exception $e) {
@@ -546,12 +670,12 @@ class StripeService
     private function getReturnUrlForAddition(User $user): string
     {
         $baseUrl = config('app.url');
-        
+
         // Handle local development HTTPS requirement
         if (str_contains($baseUrl, 'localhost') || str_contains($baseUrl, '127.0.0.1')) {
             $baseUrl = 'https://your-app.test'; // Change to your local HTTPS domain
         }
-        
+
         if ($user->isAgent()) {
             return $baseUrl . '/agent/payment-methods/add-complete';
         } else {
@@ -567,16 +691,16 @@ class StripeService
         try {
             // Get or create customer for user
             $customer = $this->getOrCreateCustomer($user);
-            
+
             // Retrieve the payment method from Stripe
             $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethodId);
-            
+
             // Handle US bank account verification requirement
             if ($stripePaymentMethod->type === 'us_bank_account') {
                 // Store as unverified and require verification
                 return $this->storeUnverifiedBankAccount($user, $stripePaymentMethod, $isDefault);
             }
-            
+
             // Attach to customer if not already attached (for cards)
             if (!$stripePaymentMethod->customer) {
                 $stripePaymentMethod->attach(['customer' => $customer]);
@@ -619,12 +743,12 @@ class StripeService
                 // Handle bank account verification requirement
                 return $this->handleBankAccountVerification($user, $paymentMethodId, $isDefault, $e);
             }
-            
+
             Log::error('Payment method attachment failed: ' . $e->getMessage(), [
                 'user_id' => $user->id,
                 'payment_method_id' => $paymentMethodId,
             ]);
-            
+
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -693,13 +817,13 @@ class StripeService
         try {
             // Retrieve the payment method details
             $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethodId);
-            
+
             // Store unverified bank account for verification
             return $this->storeUnverifiedBankAccount($user, $stripePaymentMethod, $isDefault);
-            
+
         } catch (\Exception $e) {
             Log::error('Bank account verification handling failed: ' . $e->getMessage());
-            
+
             return [
                 'success' => false,
                 'error' => 'Bank account verification required. US bank accounts must be verified before they can be used for payments.',
@@ -789,18 +913,18 @@ class StripeService
 
             // Get the SetupIntent
             $setupIntent = SetupIntent::retrieve($paymentMethod->stripe_verification_session_id);
-            
+
             // Verify the micro-deposits
             $setupIntent->verifyMicrodeposits(['amounts' => $amounts]);
 
             // Attach verified payment method to customer
             $customerId = $this->getOrCreateCustomer($paymentMethod->user);
             $stripePaymentMethod = StripePaymentMethod::retrieve($paymentMethod->stripe_payment_method_id);
-            
+
             // Attach to customer now that it's verified
             if (!$stripePaymentMethod->customer) {
                 $stripePaymentMethod->attach(['customer' => $customerId]);
-                
+
                 Log::info('Verified bank account attached to customer', [
                     'payment_method_id' => $paymentMethod->id,
                     'stripe_payment_method_id' => $paymentMethod->stripe_payment_method_id,
@@ -924,7 +1048,7 @@ class StripeService
 
             // Retrieve the session
             $session = FinancialConnectionsSession::retrieve($paymentMethod->financial_connections_session_id);
-            
+
             if (empty($session->accounts->data)) {
                 return [
                     'success' => false,
@@ -934,17 +1058,17 @@ class StripeService
 
             // Get the first linked account
             $account = $session->accounts->data[0];
-            
+
             // Create payment method from the linked account
             $user = $paymentMethod->user;
-            
+
             Log::info('Creating payment method from Financial Connections account', [
                 'account_id' => $account->id,
                 'user_id' => $user->id,
                 'user_name' => $user->name,
                 'user_email' => $user->email,
             ]);
-            
+
             $stripePaymentMethod = StripePaymentMethod::create([
                 'type' => 'us_bank_account',
                 'us_bank_account' => [
@@ -1031,7 +1155,7 @@ class StripeService
 
             // Retrieve the session
             $session = FinancialConnectionsSession::retrieve($paymentMethod->financial_connections_session_id);
-            
+
             return [
                 'success' => true,
                 'session' => $session,
@@ -1070,7 +1194,7 @@ class StripeService
 
             // Determine verification method
             $verificationMethod = $this->determineVerificationMethod($preferredMethod);
-            
+
             if ($verificationMethod === 'instant') {
                 return $this->createFinancialConnectionsSession($paymentMethod);
             } else {
@@ -1093,7 +1217,7 @@ class StripeService
         // For now, we'll prioritize Financial Connections if available
         // In the future, you could add logic to check if Financial Connections is enabled
         // in your Stripe account or based on other business rules
-        
+
         if ($preferredMethod === 'instant') {
             return 'instant';
         } elseif ($preferredMethod === 'microdeposits') {
@@ -1136,19 +1260,19 @@ class StripeService
     private function getReturnUrl(PaymentMethod $paymentMethod): string
     {
         $baseUrl = config('app.url');
-        
+
         // For local development, we need HTTPS for Financial Connections
         // You can either:
         // 1. Use ngrok or similar service to get HTTPS locally
         // 2. Set up local HTTPS with Laravel Valet/Herd
         // 3. For testing, use a placeholder that won't redirect but satisfies Stripe
-        
+
         if (str_contains($baseUrl, 'localhost') || str_contains($baseUrl, '127.0.0.1')) {
             // For local development, we'll handle completion manually via polling
             // This is a valid HTTPS URL that satisfies Stripe's requirements
             $baseUrl = 'https://your-app.test'; // Change this to your local HTTPS domain
         }
-        
+
         // Determine the correct route based on user type
         $user = $paymentMethod->user;
         if ($user->isAgent()) {
@@ -1173,10 +1297,10 @@ class StripeService
                     'user_role' => $user->role,
                 ],
             ]);
-            
+
             // Update user with Stripe customer ID
             $user->update(['stripe_id' => $customer->id]);
-            
+
             return $customer->id;
         }
 
@@ -1301,14 +1425,14 @@ class StripeService
         if ($transaction) {
             $failureMessage = $paymentIntent['last_payment_error']['message'] ?? 'Payment failed';
             $failureCode = $paymentIntent['last_payment_error']['code'] ?? 'unknown';
-            
+
             Log::warning('Payment failed via webhook', [
                 'payment_intent_id' => $paymentIntent['id'],
                 'transaction_id' => $transaction->id,
                 'failure_code' => $failureCode,
                 'failure_message' => $failureMessage,
             ]);
-            
+
             $transaction->markAsFailed($failureCode . ': ' . $failureMessage);
         }
     }
@@ -1327,12 +1451,12 @@ class StripeService
             $transaction = Transaction::where('invoice_id', $invoiceId)
                 ->where('stripe_payment_intent_id', $transfer['metadata']['payment_intent_id'] ?? null)
                 ->first();
-            
+
             if ($transaction && !$transaction->stripe_transfer_id) {
                 $transaction->update([
                     'stripe_transfer_id' => $transfer['id'],
                 ]);
-                
+
                 Log::info('Transaction updated with transfer ID', [
                     'transaction_id' => $transaction->id,
                     'transfer_id' => $transfer['id'],
@@ -1353,7 +1477,7 @@ class StripeService
         if ($transaction) {
             $failureReason = ($transfer['failure_code'] ?? 'unknown') . ': ' . ($transfer['failure_message'] ?? 'Transfer failed');
             $transaction->markAsTransferFailed($failureReason);
-            
+
             Log::warning('Transaction marked as transfer_failed', [
                 'transaction_id' => $transaction->id,
                 'invoice_id' => $transaction->invoice_id,
@@ -1375,12 +1499,12 @@ class StripeService
                 'status' => 'transfer_failed',
                 'notes' => 'Transfer was reversed',
             ]);
-            
+
             // Also update invoice status back to pending
             if ($transaction->invoice) {
                 $transaction->invoice->update(['status' => 'pending']);
             }
-            
+
             Log::warning('Transaction and invoice updated due to transfer reversal', [
                 'transaction_id' => $transaction->id,
                 'invoice_id' => $transaction->invoice_id,
@@ -1392,13 +1516,13 @@ class StripeService
     {
         // Update user based on account ID
         $user = User::where('stripe_connect_account_id', $account['id'])->first();
-        
+
         if ($user) {
             $user->update([
                 'stripe_capabilities' => $account['capabilities'],
-                'stripe_onboarding_complete' => $account['details_submitted'] && 
-                                                $account['charges_enabled'] && 
-                                                $account['payouts_enabled'],
+                'stripe_onboarding_complete' => $account['details_submitted'] &&
+                    $account['charges_enabled'] &&
+                    $account['payouts_enabled'],
             ]);
         }
     }
@@ -1409,7 +1533,7 @@ class StripeService
             'account_id' => $account['id'],
             'institution_name' => $account['institution_name'] ?? 'Unknown',
         ]);
-        
+
         // Note: The account creation is handled in the completeFinancialConnectionsVerification method
         // This webhook is mainly for logging and monitoring purposes
     }
@@ -1419,10 +1543,10 @@ class StripeService
         Log::info('Financial Connections account disconnected', [
             'account_id' => $account['id'],
         ]);
-        
+
         // Find and update payment method if it exists
         $paymentMethod = PaymentMethod::where('financial_connections_account_id', $account['id'])->first();
-        
+
         if ($paymentMethod) {
             $paymentMethod->update([
                 'is_active' => false,
@@ -1435,7 +1559,7 @@ class StripeService
                     ]
                 ),
             ]);
-            
+
             Log::warning('Payment method deactivated due to Financial Connections account disconnection', [
                 'payment_method_id' => $paymentMethod->id,
                 'user_id' => $paymentMethod->user_id,
@@ -1450,10 +1574,10 @@ class StripeService
             'session_id' => $session['id'],
             'accounts_count' => count($session['accounts']['data'] ?? []),
         ]);
-        
+
         // Find payment method by session ID
         $paymentMethod = PaymentMethod::where('financial_connections_session_id', $session['id'])->first();
-        
+
         if ($paymentMethod && empty($session['accounts']['data'])) {
             // Session completed but no accounts were linked
             $paymentMethod->update([
@@ -1466,7 +1590,7 @@ class StripeService
                     ]
                 ),
             ]);
-            
+
             Log::warning('Financial Connections session completed without linking accounts', [
                 'payment_method_id' => $paymentMethod->id,
                 'user_id' => $paymentMethod->user_id,
@@ -1483,7 +1607,7 @@ class StripeService
                 'payment_intent_id' => $paymentIntent['id'],
                 'transaction_id' => $transaction->id,
             ]);
-            
+
             $transaction->markAsFailed('Payment was canceled');
         }
     }
@@ -1494,7 +1618,7 @@ class StripeService
             'payment_intent_id' => $paymentIntent['id'],
             'next_action_type' => $paymentIntent['next_action']['type'] ?? 'unknown',
         ]);
-        
+
         // Transaction should already be in pending status
         // This webhook is mainly for logging/monitoring
     }
@@ -1507,7 +1631,7 @@ class StripeService
     {
         $reconciled = [];
         $failed = [];
-        
+
         // Get pending transactions older than specified minutes
         $pendingTransactions = Transaction::where('status', 'pending')
             ->where('created_at', '<', now()->subMinutes($olderThanMinutes))
@@ -1565,7 +1689,7 @@ class StripeService
                                 Log::error('Reconciliation transfer failed: ' . $e->getMessage(), [
                                     'transaction_id' => $transaction->id,
                                 ]);
-                                
+
                                 $transaction->markAsTransferFailed('Reconciliation transfer failed: ' . $e->getMessage());
                                 $failed[] = [
                                     'transaction_id' => $transaction->id,
@@ -1577,7 +1701,7 @@ class StripeService
 
                         $transaction->markAsCompleted();
                         $transaction->invoice->markAsPaid();
-                        
+
                         $reconciled[] = [
                             'transaction_id' => $transaction->id,
                             'status' => 'completed',
@@ -1597,7 +1721,7 @@ class StripeService
                     case 'requires_payment_method':
                         // Payment failed or was canceled
                         $transaction->markAsFailed('Payment ' . $paymentIntent->status);
-                        
+
                         $reconciled[] = [
                             'transaction_id' => $transaction->id,
                             'status' => 'failed',
@@ -1625,7 +1749,7 @@ class StripeService
                 Log::error('Reconciliation failed for transaction: ' . $e->getMessage(), [
                     'transaction_id' => $transaction->id,
                 ]);
-                
+
                 $failed[] = [
                     'transaction_id' => $transaction->id,
                     'error' => $e->getMessage(),
@@ -1673,7 +1797,7 @@ class StripeService
 
             // Retrieve payment method to check type
             $stripePaymentMethod = StripePaymentMethod::retrieve($stripePaymentMethodId);
-            
+
             // For ACH payments, create customer if not provided (required by Stripe)
             if ($stripePaymentMethod->type === 'us_bank_account' && !$customerId) {
                 $customer = Customer::create([
@@ -1687,11 +1811,11 @@ class StripeService
                     ],
                 ]);
                 $customerId = $customer->id;
-                
+
                 // Attach payment method to customer for ACH
                 $stripePaymentMethod->attach(['customer' => $customerId]);
             }
-            
+
             // Prepare PaymentIntent parameters
             $paymentIntentParams = [
                 'amount' => $amounts['payable_amount_cents'],
@@ -1758,9 +1882,9 @@ class StripeService
                             'payment_type' => 'guest',
                         ],
                     ]);
-                    
+
                     $transferId = $transfer->id;
-                    
+
                     Log::info('Guest payment transfer created successfully', [
                         'transfer_id' => $transfer->id,
                         'payment_intent_id' => $paymentIntent->id,
@@ -1771,7 +1895,7 @@ class StripeService
                         'payment_intent_id' => $paymentIntent->id,
                         'invoice_id' => $invoice->id,
                     ]);
-                    
+
                     // Create transaction with transfer_failed status
                     $transaction = Transaction::create([
                         'transaction_id' => Transaction::generateTransactionId(),
@@ -1791,7 +1915,7 @@ class StripeService
                         )),
                         'notes' => 'Guest payment succeeded but transfer failed: ' . $e->getMessage(),
                     ]);
-                    
+
                     return [
                         'success' => false,
                         'error' => 'Payment succeeded but transfer to agent failed. Support has been notified.',
@@ -1909,21 +2033,21 @@ class StripeService
         try {
             // Retrieve the session
             $session = FinancialConnectionsSession::retrieve($sessionId);
-            
+
             Log::info('Guest Financial Connections session retrieved', [
                 'session_id' => $sessionId,
                 'customer_id' => $customerId,
                 'invoice_id' => $invoice->id,
                 'accounts_count' => count($session->accounts->data ?? []),
             ]);
-            
+
             if (empty($session->accounts->data)) {
                 Log::warning('No accounts linked in guest Financial Connections session', [
                     'session_id' => $sessionId,
                     'customer_id' => $customerId,
                     'invoice_id' => $invoice->id,
                 ]);
-                
+
                 return [
                     'success' => false,
                     'error' => 'No accounts were linked during the connection process.',
@@ -1932,14 +2056,14 @@ class StripeService
 
             // Get the first linked account
             $account = $session->accounts->data[0];
-            
+
             Log::info('Processing guest Financial Connections account', [
                 'account_id' => $account->id,
                 'customer_id' => $customerId,
                 'invoice_id' => $invoice->id,
                 'institution_name' => $account->institution_name,
             ]);
-            
+
             // Create payment method from the linked account
             $stripePaymentMethod = StripePaymentMethod::create([
                 'type' => 'us_bank_account',
@@ -1974,11 +2098,11 @@ class StripeService
                 'customer_id' => $customerId,
                 'invoice_id' => $invoice->id,
             ]);
-            
+
             return [
                 'success' => false,
                 'error' => 'Failed to complete bank account connection: ' . $e->getMessage(),
             ];
         }
     }
-} 
+}

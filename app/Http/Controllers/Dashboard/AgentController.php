@@ -26,7 +26,7 @@ class AgentController extends Controller
     public function dashboard()
     {
         $agent = Auth::user()->agent;
-        
+
         $stats = [
             'total_invoices' => $agent->invoices()->count(),
             'pending_invoices' => $agent->invoices()->where('status', 'pending')->count(),
@@ -59,7 +59,11 @@ class AgentController extends Controller
         $stripeOnboardingComplete = Auth::user()->isStripeOnboardingComplete();
 
         return view('agent.dashboard', compact(
-            'agent', 'stats', 'recentInvoices', 'recentTransactions', 'stripeOnboardingComplete'
+            'agent',
+            'stats',
+            'recentInvoices',
+            'recentTransactions',
+            'stripeOnboardingComplete'
         ));
     }
 
@@ -80,14 +84,14 @@ class AgentController extends Controller
     public function showInvoice(Invoice $invoice)
     {
         $agent = Auth::user()->agent;
-        
+
         // Ensure invoice belongs to this agent
         if ($invoice->agent_id !== $agent->id) {
             abort(403, 'Unauthorized.');
         }
-        
+
         $invoice->load(['company.user', 'transactions']);
-        
+
         return view('agent.invoices.show', compact('invoice'));
     }
 
@@ -108,14 +112,14 @@ class AgentController extends Controller
     public function showTransaction(Transaction $transaction)
     {
         $agent = Auth::user()->agent;
-        
+
         // Ensure transaction belongs to this agent
         if ($transaction->agent_id !== $agent->id) {
             abort(403, 'Unauthorized.');
         }
-        
+
         $transaction->load(['invoice', 'company.user']);
-        
+
         return view('agent.transactions.show', compact('transaction'));
     }
 
@@ -141,7 +145,7 @@ class AgentController extends Controller
     public function createFinancialConnectionsSession(Request $request)
     {
         $user = Auth::user();
-        
+
         $result = $this->stripeService->createFinancialConnectionsSessionForAddition($user);
 
         if ($result['success']) {
@@ -165,7 +169,7 @@ class AgentController extends Controller
     public function checkFinancialConnectionsAdditionStatus(Request $request)
     {
         $user = Auth::user();
-        
+
         $request->validate([
             'session_id' => 'required|string',
         ]);
@@ -187,10 +191,10 @@ class AgentController extends Controller
     public function completeFinancialConnectionsAddition(Request $request)
     {
         $user = Auth::user();
-        
+
         // Get session_id from query parameter for return URL
         $sessionId = $request->query('session_id') ?? $request->input('session_id');
-        
+
         if (!$sessionId) {
             return redirect()->route('agent.payment-methods')
                 ->with('error', 'Missing session ID for Financial Connections completion.');
@@ -231,10 +235,64 @@ class AgentController extends Controller
         ], 400);
     }
 
+    /**
+     * Create a SetupIntent for off-session card setup with 3DS
+     */
+    public function createCardSetupIntent(Request $request)
+    {
+        $user = Auth::user();
+
+        $result = $this->stripeService->createSetupIntentForOffSession($user);
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'client_secret' => $result['client_secret'],
+                'setup_intent_id' => $result['setup_intent_id'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
+    /**
+     * Confirm card setup after 3DS authentication
+     */
+    public function confirmCardSetup(Request $request)
+    {
+        $request->validate([
+            'setup_intent_id' => 'required|string|starts_with:seti_',
+            'is_default' => 'sometimes|boolean',
+        ]);
+
+        $user = Auth::user();
+        $result = $this->stripeService->completeCardSetup(
+            $user,
+            $request->setup_intent_id,
+            $request->boolean('is_default', false)
+        );
+
+        if ($result['success']) {
+            return response()->json([
+                'success' => true,
+                'message' => $result['message'],
+                'payment_method' => $result['payment_method'],
+            ]);
+        }
+
+        return response()->json([
+            'success' => false,
+            'error' => $result['error'],
+        ], 400);
+    }
+
     public function setDefaultPaymentMethod(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure payment method belongs to this user
         if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
@@ -248,7 +306,7 @@ class AgentController extends Controller
     public function deletePaymentMethod(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure payment method belongs to this user
         if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized.');
@@ -269,7 +327,7 @@ class AgentController extends Controller
     public function initiateMicroDepositVerification(Request $request, PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -299,7 +357,7 @@ class AgentController extends Controller
     public function showVerifyForm(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             abort(403, 'Unauthorized access to payment method.');
@@ -332,7 +390,7 @@ class AgentController extends Controller
     public function initiateVerification(Request $request, PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -376,7 +434,7 @@ class AgentController extends Controller
     public function checkFinancialConnectionsStatus(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -412,7 +470,7 @@ class AgentController extends Controller
     public function completeFinancialConnectionsVerification(PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return redirect()->route('agent.payment-methods')
@@ -436,7 +494,7 @@ class AgentController extends Controller
     public function verifyMicroDeposits(Request $request, PaymentMethod $paymentMethod)
     {
         $user = Auth::user();
-        
+
         // Ensure this payment method belongs to the current user
         if ($paymentMethod->user_id !== $user->id) {
             return response()->json([
@@ -479,14 +537,14 @@ class AgentController extends Controller
     {
         $agent = Auth::user()->agent;
         $agent->load(['user', 'company.user']);
-        
+
         return view('agent.profile', compact('agent'));
     }
 
     public function updateProfile(Request $request)
     {
         $agent = Auth::user()->agent;
-        
+
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users,email,' . $agent->user->id,
@@ -513,7 +571,7 @@ class AgentController extends Controller
     public function performance()
     {
         $agent = Auth::user()->agent;
-        
+
         $monthlyStats = $agent->transactions()
             ->selectRaw('YEAR(created_at) as year, MONTH(created_at) as month, COUNT(*) as count, SUM(net_amount) as total')
             ->where('status', 'completed')
@@ -545,7 +603,10 @@ class AgentController extends Controller
         ];
 
         return view('agent.performance', compact(
-            'monthlyStats', 'yearlyTotal', 'topInvoices', 'paymentStats'
+            'monthlyStats',
+            'yearlyTotal',
+            'topInvoices',
+            'paymentStats'
         ));
     }
 
@@ -557,7 +618,7 @@ class AgentController extends Controller
         $agent = Auth::user()->agent;
         $company = $agent->company;
         $company->load('user');
-        
+
         return view('agent.company', compact('company', 'agent'));
     }
 
@@ -567,10 +628,10 @@ class AgentController extends Controller
     public function earnings()
     {
         $agent = Auth::user()->agent;
-        
+
         $currentYear = now()->year;
         $monthlyEarnings = [];
-        
+
         for ($month = 1; $month <= 12; $month++) {
             $monthlyEarnings[] = [
                 'month' => $month,
@@ -592,7 +653,10 @@ class AgentController extends Controller
         $avgMonthlyEarnings = $totalEarnings / 12;
 
         return view('agent.earnings', compact(
-            'monthlyEarnings', 'totalEarnings', 'avgMonthlyEarnings', 'currentYear'
+            'monthlyEarnings',
+            'totalEarnings',
+            'avgMonthlyEarnings',
+            'currentYear'
         ));
     }
 }
